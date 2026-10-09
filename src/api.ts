@@ -4,6 +4,7 @@ import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+import { InstallAddress, installInstructions } from "./install.ts";
 import { AppInfo } from "./service.ts";
 import { Identity, normalize, Submission, TraceStore } from "./traces.ts";
 
@@ -21,14 +22,10 @@ const Rpc = Schema.Struct({
 });
 
 const Search = Schema.Struct({ query: Schema.String });
-const hookGuide = {
-  "claude-code":
-    "Inspect .claude/settings.json or ~/.claude/settings.json; command hooks receive JSON on stdin. Install only after owner approval; use an out-of-band Access service token and POST to /api/events.",
-  codex:
-    "Inspect .codex/hooks.json or ~/.codex/hooks.json; command hooks receive event JSON on stdin. Legacy notify only reports turn completion. Install only after owner approval.",
-  pi: "Inspect .pi/extensions or ~/.pi/agent/extensions; use a trusted extension to subscribe to lifecycle events. Install only after owner approval.",
-  amp: "No verified supported lifecycle hook contract. MCP search works; automatic trace capture is not supported yet.",
-};
+const install = Effect.gen(function* () {
+  const address = yield* InstallAddress;
+  return installInstructions(yield* address.apiUrl);
+});
 
 const authorize = Effect.gen(function* () {
   const identity = yield* Identity;
@@ -42,6 +39,15 @@ const search = (owner: string, query: string) =>
   });
 
 export const apiRoutes = Layer.mergeAll(
+  HttpRouter.add(
+    "GET",
+    "/install",
+    Effect.gen(function* () {
+      return HttpServerResponse.text(yield* install, {
+        headers: { "content-type": "text/markdown; charset=utf-8", "cache-control": "no-store" },
+      });
+    }),
+  ),
   HttpRouter.add(
     "GET",
     "/api/health",
@@ -122,7 +128,7 @@ export const apiRoutes = Layer.mergeAll(
             {
               name: "inspect_hooks",
               description:
-                "Inspect supported agent hook locations and installation prerequisites; returns guidance, never changes files.",
+                "Read setup instructions for remote MCP and opt-in agent hooks; never changes files.",
               inputSchema: { type: "object", properties: {} },
             },
           ],
@@ -138,7 +144,7 @@ export const apiRoutes = Layer.mergeAll(
             error: { code: -32602, message: "Invalid parameters" },
           });
         if (call.value.name === "inspect_hooks")
-          result = { content: [{ type: "text", text: JSON.stringify(hookGuide) }] };
+          result = { content: [{ type: "text", text: yield* install }] };
         else if (call.value.name === "search_traces") {
           const args = yield* Schema.decodeUnknownEffect(Search)(call.value.arguments).pipe(
             Effect.option,

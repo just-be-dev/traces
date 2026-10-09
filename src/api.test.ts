@@ -2,9 +2,14 @@ import { expect, test } from "bun:test";
 import * as HttpRouter from "effect/http/HttpRouter";
 import * as Layer from "effect/Layer";
 import * as Effect from "effect/Effect";
+import { InstallAddress } from "./install.ts";
 import { AppInfo } from "./service.ts";
 import { apiRoutes } from "./api.ts";
 import { Identity, TraceStore } from "./traces.ts";
+
+const installAddress = Layer.succeed(InstallAddress, {
+  apiUrl: Effect.succeed("https://api.example.test"),
+});
 
 test("health reads the supplied capability and unknown routes return JSON errors", async () => {
   const { handler, dispose } = HttpRouter.toWebHandler(
@@ -12,6 +17,7 @@ test("health reads the supplied capability and unknown routes return JSON errors
       Layer.provideMerge(
         Layer.mergeAll(
           AppInfo.layer("Different project"),
+          installAddress,
           Layer.succeed(Identity, { owner: Effect.succeed(null) }),
           Layer.succeed(TraceStore, {
             insert: () => Effect.succeed(false),
@@ -30,6 +36,14 @@ test("health reads the supplied capability and unknown routes return JSON errors
     const missing = await handler(new Request("http://app/api/missing"));
     expect(missing.status).toBe(404);
     expect(await missing.text()).toBe(JSON.stringify({ error: "Not found" }));
+    const install = await handler(new Request("https://public.example.test/install"));
+    expect(install.status).toBe(200);
+    expect(install.headers.get("content-type")).toStartWith("text/markdown");
+    const instructions = await install.text();
+    expect(instructions).toContain("codex mcp add traces --url https://api.example.test/mcp");
+    expect(instructions).toContain("amp clone just-be/traces");
+    expect(instructions).toContain("/absolute/path/to/traces/scripts/submit-hook.ts");
+    expect(instructions).not.toContain("https://public.example.test/mcp");
   } finally {
     await dispose();
   }
@@ -42,6 +56,7 @@ test("authenticated ingestion preserves source payloads, deduplicates, and searc
       Layer.provideMerge(
         Layer.mergeAll(
           AppInfo.layer("Traces"),
+          installAddress,
           Layer.succeed(Identity, { owner: Effect.succeed("owner") }),
           Layer.succeed(TraceStore, {
             insert: (event) =>
@@ -102,6 +117,20 @@ test("authenticated ingestion preserves source payloads, deduplicates, and searc
     expect(JSON.parse(JSON.parse(await rpc.text()).result.content[0].text)).toEqual([
       { ...event, owner: "owner", summary: "Read" },
     ]);
+    const inspection = await handler(
+      new Request("http://app/mcp", {
+        method: "POST",
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 2,
+          method: "tools/call",
+          params: { name: "inspect_hooks" },
+        }),
+      }),
+    );
+    expect(JSON.parse(await inspection.text()).result.content[0].text).toBe(
+      await (await handler(new Request("http://app/install"))).text(),
+    );
     expect(
       (await handler(new Request("http://app/api/events", { method: "POST", body: "{}" }))).status,
     ).toBe(400);
@@ -140,6 +169,7 @@ test("unidentified requests cannot read or submit traces or invoke MCP", async (
       Layer.provideMerge(
         Layer.mergeAll(
           AppInfo.layer("Traces"),
+          installAddress,
           Layer.succeed(Identity, { owner: Effect.succeed(null) }),
           Layer.succeed(TraceStore, {
             insert: () => Effect.die("unexpected write"),

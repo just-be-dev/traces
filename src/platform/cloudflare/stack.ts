@@ -7,7 +7,7 @@ import Api from "./api.ts";
 export const App = Cloudflare.Website.Foldkit("App", {
   main: "src/platform/cloudflare/edge.ts",
   env: { API: Api },
-  assets: { runWorkerFirst: ["/api/*", "/mcp"] },
+  assets: { runWorkerFirst: ["/api/*", "/mcp", "/install"] },
   compatibility: { date: "2026-10-04" },
   observability: {
     enabled: true,

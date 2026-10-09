@@ -17,7 +17,7 @@ Before any deployment, set `TRACES_ACCESS_EMAIL` to the account allowed to inspe
 | [Codex](https://github.com/openai/codex/blob/main/codex-rs/config/src/hook_config.rs)         | `.codex/hooks.json` or `~/.codex/hooks.json` command hooks; legacy `notify` is turn-complete only. | Opt-in bridge for hook events; confirm active CLI version before installation.    |
 | Amp                                                                                           | MCP tools exist; a stable turn/tool lifecycle hook API was not verified.                           | MCP search only. Do not infer traces of Amp activity from MCP calls.              |
 
-`inspect_hooks` exposes these locations and limitations as MCP guidance. A remote server cannot inspect or edit a caller's filesystem on its own. A future installer must run in the agent's local context, read and merge existing hook config (never overwrite), show the exact diff, request user approval, write atomically, and verify a test event. It must avoid printing or embedding secrets. Do not claim the current read-only tool has installed hooks.
+Public `GET /install` on the Website serves Markdown instructions with the API Worker's own URL, client-specific MCP registration commands, and opt-in hook examples. Authenticated MCP `inspect_hooks` returns the same text. A remote server cannot inspect or edit a caller's filesystem on its own. A future installer must run in the agent's local context, read and merge existing hook config (never overwrite), show the exact diff, request user approval, write atomically, and verify a test event. It must avoid printing or embedding secrets. Do not claim the current read-only tool has installed hooks.
 
 ## Storage and risk
 

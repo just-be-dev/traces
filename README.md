@@ -9,7 +9,7 @@ mise run build
 mise run dev
 ```
 
-Alchemy prints separate Website and API Worker URLs. The Website is a product landing page; the API Worker accepts `GET /api/health`, `POST /api/events`, `GET /api/events?q=<session-or-tool>`, and stateless Streamable HTTP `POST /mcp` (tools: `search_traces` and read-only `inspect_hooks`). Local dev simulates Cloudflare Access. Production private routes fail closed without an authenticated Access context. Do **not** use this prototype with sensitive real traces until retention, redaction, limits, and OAuth-client interoperability have been reviewed.
+Alchemy prints separate Website and API Worker URLs. Visit **`/install` on the Website URL** for public agent-readable Markdown with per-client MCP registration and opt-in hook instructions; it embeds the actual API Worker URL. The API Worker accepts `GET /api/health`, `POST /api/events`, `GET /api/events?q=<session-or-tool>`, and stateless Streamable HTTP `POST /mcp` (tools: `search_traces` and read-only `inspect_hooks`). Local dev simulates Cloudflare Access. Production private routes fail closed without an authenticated Access context. Do **not** use this prototype with sensitive real traces until retention, redaction, limits, and OAuth-client interoperability have been reviewed.
 
 An example local event:
 

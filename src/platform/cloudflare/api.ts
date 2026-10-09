@@ -3,6 +3,7 @@ import * as Alchemy from "alchemy";
 import * as Effect from "effect/Effect";
 import * as HttpRouter from "effect/http/HttpRouter";
 import * as Layer from "effect/Layer";
+import { InstallAddress } from "../../install.ts";
 import { AppInfo } from "../../service.ts";
 import { apiRoutes } from "../../api.ts";
 import { Database, identity, storage } from "./traces.ts";
@@ -46,9 +47,13 @@ export default class Api extends Cloudflare.Worker<Api>()(
     const db = yield* Cloudflare.D1.QueryDatabase(yield* Database);
     const runtime = yield* Alchemy.RuntimeContext;
     const context = yield* Cloudflare.WorkerExecutionContext;
+    const url = yield* Cloudflare.Worker.URL;
     const services = Layer.mergeAll(
       storage(db, runtime),
       identity(context, runtime),
+      Layer.succeed(InstallAddress, {
+        apiUrl: url.pipe(Effect.provideService(Alchemy.RuntimeContext, runtime)),
+      }),
       AppInfo.layer("Traces"),
     );
     const handler = yield* HttpRouter.toHttpEffect(apiRoutes);
