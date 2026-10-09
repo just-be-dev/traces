@@ -1,0 +1,36 @@
+{
+  "$schema": "https://raw.githubusercontent.com/Effect-TS/language-service/refs/heads/main/schema.json",
+  "compilerOptions": {
+    "target": "ESNext",
+    "lib": ["ESNext", "DOM"],
+    "module": "Preserve",
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "noEmit": true,
+    "strict": true,
+    "skipLibCheck": true,
+    "noUncheckedIndexedAccess": true,
+    "paths": { "@/*": ["./src/ui/*"] },
+    "types": ["@cloudflare/workers-types", "bun", "vite/client"],
+    "plugins": [
+      {
+        "name": "@effect/language-service",
+        "allowedDuplicatedPackages": ["effect-oxlint"],
+        "overrides": [
+          {
+            "include": [
+              "src/ui/api.ts",
+              "src/ui/**/command.ts",
+              "src/api.ts",
+              "src/api.test.ts",
+              "src/platform/cloudflare/api.ts"
+            ],
+            "options": { "allowedUnstableApis": ["effect/http"] }
+          }
+        ]
+      }
+    ]
+  },
+  "include": ["src/**/*.ts", "alchemy.run.ts", "oxlint.config.ts", "vite.config.ts"]
+}
