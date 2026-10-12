@@ -6,6 +6,11 @@ export class InstallAddress extends Context.Service<
   { readonly apiUrl: Effect.Effect<string> }
 >()("traces/InstallAddress") {}
 
+export const readInstallInstructions = Effect.fn("Install.read")(function* () {
+  const address = yield* InstallAddress;
+  return installInstructions(yield* address.apiUrl);
+});
+
 export const installInstructions = (apiUrl: string) => {
   const mcpUrl = new URL("/mcp", apiUrl).href;
   const eventsUrl = new URL("/api/events", apiUrl).href;

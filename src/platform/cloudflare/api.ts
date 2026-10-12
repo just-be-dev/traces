@@ -5,8 +5,18 @@ import * as HttpRouter from "effect/http/HttpRouter";
 import * as Layer from "effect/Layer";
 import { InstallAddress } from "../../install.ts";
 import { AppInfo } from "../../service.ts";
-import { apiRoutes } from "../../api.ts";
+import { apiRoutes, traceRequest } from "../../api.ts";
 import { Database, identity, storage } from "./traces.ts";
+
+// Prototype volume: keep every request. Lower both rates together once traffic grows.
+const sampling = { headSamplingRate: 1, persist: true } as const;
+
+/** Workers Observability for both Workers: invocation logs plus traces. */
+export const observability = {
+  enabled: true,
+  logs: { enabled: true, invocationLogs: true, ...sampling },
+  traces: { enabled: true, ...sampling },
+};
 
 const Access = Cloudflare.Access.Application("TracesAccess", {
   type: "self_hosted",
@@ -38,33 +48,32 @@ export default class Api extends Cloudflare.Worker<Api>()(
     access: Access,
     dev: { access: { aud: "local", identity: { email: "local@example.invalid" } } },
     compatibility: { date: "2026-10-04" },
-    observability: {
-      enabled: true,
-      logs: { enabled: true, invocationLogs: true, headSamplingRate: 1, persist: true },
-    },
+    observability,
   },
   Effect.gen(function* () {
     const db = yield* Cloudflare.D1.QueryDatabase(yield* Database);
     const runtime = yield* Alchemy.RuntimeContext;
     const context = yield* Cloudflare.WorkerExecutionContext;
     const url = yield* Cloudflare.Worker.URL;
+    const withRuntime = Effect.provideService(Alchemy.RuntimeContext, runtime);
     const services = Layer.mergeAll(
-      storage(db, runtime),
-      identity(context, runtime),
+      storage(db.raw.pipe(withRuntime)),
+      identity(context.access.pipe(withRuntime)),
       Layer.succeed(InstallAddress, {
-        apiUrl: url.pipe(Effect.provideService(Alchemy.RuntimeContext, runtime)),
+        apiUrl: url.pipe(withRuntime),
       }),
       AppInfo.layer("Traces"),
     );
     const handler = yield* HttpRouter.toHttpEffect(apiRoutes);
     return {
-      fetch: handler.pipe(Effect.provide(services), Effect.withSpan("Api.request")),
+      fetch: traceRequest(handler).pipe(Effect.provide(services)),
     };
   }).pipe(
     Effect.provide(
       Layer.mergeAll(
         Cloudflare.D1.QueryDatabaseBinding,
-        Cloudflare.Telemetry({ headSamplingRate: 1, persist: true }),
+        // Mirrors Effect.fn and Effect.withSpan spans into the Workers trace waterfall.
+        Cloudflare.Telemetry(sampling),
         Alchemy.RuntimeContext.phantom,
       ),
     ),
