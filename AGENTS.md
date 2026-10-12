@@ -2,7 +2,7 @@
 
 Read `README.md` and `docs/traces.md`. This is a single-tenant trace collector prototype. Preserve raw hook JSON, keep search scoped to the Access owner, and never permit missing Access identity on private API paths.
 
-`src/traces.ts` defines event envelopes and services. `src/api.ts` owns HTTP and MCP routes. `src/platform/cloudflare/{stack,api,traces,edge}.ts` declare resources, D1 storage, Access, and the forwarding Website. `src/ui/entry.ts` boots the landing page in `src/ui/main.ts`.
+`src/traces.ts` defines event envelopes and services. `src/api.ts` owns HTTP and MCP routes. `src/platform/cloudflare/{stack,api,traces,search,edge}.ts` declare resources, D1 storage, Access, the AI Search content index, and the forwarding Website. `src/ui/entry.ts` boots the landing page in `src/ui/main.ts`.
 
 ## Ownership and scope
 

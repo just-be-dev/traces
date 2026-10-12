@@ -1,0 +1,96 @@
+diff --git a/lib/Cloudflare/AI/SearchInstance.d.ts b/lib/Cloudflare/AI/SearchInstance.d.ts
+index b1bc75578fb3ebb131c778676805d4abedf35815..b5ba5bcccb447c735fa5de37aeed7d838330407a 100644
+--- a/lib/Cloudflare/AI/SearchInstance.d.ts
++++ b/lib/Cloudflare/AI/SearchInstance.d.ts
+@@ -8,7 +8,8 @@ type TypeId = typeof TypeId;
+ /**
+  * The kind of data source an AI Search instance indexes.
+  */
+-export type SearchInstanceSourceType = "r2" | "web-crawler";
++// PATCH: "builtin" creates a built-in-storage instance (no type or source) filled through the Items API.
++export type SearchInstanceSourceType = "r2" | "web-crawler" | "builtin";
+ /**
+  * Generation model used to answer AI Search queries.
+  */
+@@ -82,7 +83,8 @@ export type SearchInstanceProps = {
+      * URL (for `type: "web-crawler"`). Changing it triggers a replacement —
+      * the index must be rebuilt from scratch.
+      */
+-    source: string;
++    // PATCH: optional for type "builtin".
++    source?: string;
+     /**
+      * Source-specific indexing parameters (R2 prefix / include / exclude
+      * filters, web-crawler crawl and parse options).
+diff --git a/lib/Cloudflare/AI/SearchInstance.js b/lib/Cloudflare/AI/SearchInstance.js
+index 85aa4bb6cbc28add5accb224f4039e29c69a7ed2..6eb498f37b5c8ea9d5f3cad7dbc38a83be96d8a2 100644
+--- a/lib/Cloudflare/AI/SearchInstance.js
++++ b/lib/Cloudflare/AI/SearchInstance.js
+@@ -335,8 +335,9 @@ export const SearchInstanceProvider = () => Provider.succeed(SearchInstance, {
+                 accountId: acct,
+                 name: namespace,
+                 id: instanceId,
+-                type: news.type ?? "r2",
+-                ...toMutableBody(news),
++                // PATCH: built-in storage omits type and source.
++                type: news.type === "builtin" ? undefined : (news.type ?? "r2"),
++                ...defined(toMutableBody(news)),
+             })
+                 .pipe(retryTokenPropagation, Effect.map((created) => ({
+                 created: true,
+@@ -534,7 +535,8 @@ const toAttributes = (instance, accountId, namespace) => ({
+     accountId,
+     namespace,
+     // Distilled widens generated string enums to open unions.
+-    type: (normalize(instance.type) ?? "r2"),
++    // PATCH: Cloudflare reports no type or source for built-in storage.
++  type: (normalize(instance.type) ?? (normalize(instance.source) === undefined ? "builtin" : "r2")),
+     source: normalize(instance.source),
+     tokenId: normalize(instance.tokenId),
+     aiGatewayId: normalize(instance.aiGatewayId),
+diff --git a/src/Cloudflare/AI/SearchInstance.ts b/src/Cloudflare/AI/SearchInstance.ts
+index 1c554c19084af369584417c4f94dc8450ddad328..815bff762b25225404ccaa08149fd3febc084935 100644
+--- a/src/Cloudflare/AI/SearchInstance.ts
++++ b/src/Cloudflare/AI/SearchInstance.ts
+@@ -15,7 +15,8 @@ type TypeId = typeof TypeId;
+ /**
+  * The kind of data source an AI Search instance indexes.
+  */
+-export type SearchInstanceSourceType = "r2" | "web-crawler";
++// PATCH: "builtin" creates a built-in-storage instance (no type or source) filled through the Items API.
++export type SearchInstanceSourceType = "r2" | "web-crawler" | "builtin";
+ 
+ /**
+  * Generation model used to answer AI Search queries.
+@@ -109,7 +110,8 @@ export type SearchInstanceProps = {
+    * URL (for `type: "web-crawler"`). Changing it triggers a replacement —
+    * the index must be rebuilt from scratch.
+    */
+-  source: string;
++  // PATCH: optional for type "builtin".
++  source?: string;
+   /**
+    * Source-specific indexing parameters (R2 prefix / include / exclude
+    * filters, web-crawler crawl and parse options).
+@@ -649,8 +651,9 @@ export const SearchInstanceProvider = () =>
+             accountId: acct,
+             name: namespace,
+             id: instanceId,
+-            type: news.type ?? "r2",
+-            ...toMutableBody(news),
++            // PATCH: built-in storage omits type and source.
++            type: news.type === "builtin" ? undefined : (news.type ?? "r2"),
++            ...defined(toMutableBody(news)),
+           })
+           .pipe(
+             retryTokenPropagation,
+@@ -916,7 +919,8 @@ const toAttributes = (
+   accountId,
+   namespace,
+   // Distilled widens generated string enums to open unions.
+-  type: (normalize(instance.type) ?? "r2") as SearchInstanceSourceType,
++  // PATCH: Cloudflare reports no type or source for built-in storage.
++  type: (normalize(instance.type) ?? (normalize(instance.source) === undefined ? "builtin" : "r2")) as SearchInstanceSourceType,
+   source: normalize(instance.source),
+   tokenId: normalize(instance.tokenId),
+   aiGatewayId: normalize(instance.aiGatewayId),

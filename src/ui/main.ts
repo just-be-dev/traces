@@ -63,12 +63,12 @@ export const view = (model: Model, h: HtmlBuilder<Message>): Document => ({
           h.p(
             [h.Class("mt-2 text-sm text-muted-foreground")],
             [
-              "Events are stored in D1 with their raw payload and a small searchable projection. Access gates the remote API; Basin analytics comes later.",
+              "Events are stored in D1 with their raw payload and a small searchable projection, and their contents are indexed for full-text search in Cloudflare AI Search. Access gates the remote API; Basin analytics comes later.",
             ],
           ),
           h.p(
             [h.Class("my-6 font-mono text-sm text-muted-foreground")],
-            ["POST /api/events     GET /api/events?q=…     POST /mcp"],
+            ["POST /api/events     GET /api/events?q=…     GET /api/search?q=…     POST /mcp"],
           ),
           h.div(
             [h.Class("flex gap-3")],

@@ -27,7 +27,7 @@ Check whether an entry named \`traces\` already exists. Do not overwrite it with
 - Codex CLI: \`codex mcp add traces --url ${mcpUrl}\`, then \`codex mcp login traces\`.
 - Pi: \`pi mcp add traces --url ${mcpUrl}\`, then \`pi mcp login traces\`.
 
-Verify that \`search_traces\` and \`inspect_hooks\` appear in MCP tool discovery. Do not put Access service-token secrets in MCP settings or the repository. If OAuth fails, report the error rather than using a browser cookie as a workaround.
+Verify that \`search_traces\`, \`search_trace_contents\`, and \`inspect_hooks\` appear in MCP tool discovery. Do not put Access service-token secrets in MCP settings or the repository. If OAuth fails, report the error rather than using a browser cookie as a workaround.
 
 ## Get and install optional hooks
 

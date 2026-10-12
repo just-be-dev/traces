@@ -34,7 +34,10 @@ export const SearchQuery = Schema.String.check(
 export type SearchQuery = typeof SearchQuery.Type;
 
 export const MAX_SEARCH_RESULTS = 100;
+export const MAX_CONTENT_RESULTS = 20;
 export const MAX_RAW_LENGTH = 64_000;
+/** Traces the scheduled sweep indexes per run. */
+export const INDEX_BATCH_SIZE = 25;
 
 // Public wire format. Brands are type-level only, so the JSON shape is unchanged.
 export const Submission = Schema.Struct({
@@ -73,9 +76,19 @@ export class InvalidSearchQuery extends Schema.TaggedError<InvalidSearchQuery>()
 ) {}
 
 export class TraceStoreError extends Schema.TaggedError<TraceStoreError>()("TraceStoreError", {
-  operation: Schema.Literals(["insert", "search"]),
+  operation: Schema.Literals(["insert", "search", "get", "unindexed", "markIndexed"]),
   cause: Schema.Defect(),
 }) {}
+
+export class TraceIndexError extends Schema.TaggedError<TraceIndexError>()("TraceIndexError", {
+  operation: Schema.Literals(["index", "search"]),
+  cause: Schema.Defect(),
+}) {}
+
+const traceKey = (owner: Owner, id: EventId) => JSON.stringify([owner, id]);
+
+const newestFirst = (a: Trace, b: Trace) =>
+  b.occurredAt.localeCompare(a.occurredAt) || b.id.localeCompare(a.id);
 
 export class TraceStore extends Context.Service<
   TraceStore,
@@ -87,15 +100,25 @@ export class TraceStore extends Context.Service<
       owner: Owner,
       query: SearchQuery,
     ) => Effect.Effect<ReadonlyArray<Trace>, TraceStoreError>;
+    /** The owner's traces with these IDs, in the order given. Unknown IDs are dropped. */
+    readonly get: (
+      owner: Owner,
+      ids: ReadonlyArray<EventId>,
+    ) => Effect.Effect<ReadonlyArray<Trace>, TraceStoreError>;
+    /** Stored traces the content index hasn't confirmed, newest first, across all owners. */
+    readonly unindexed: (limit: number) => Effect.Effect<ReadonlyArray<Trace>, TraceStoreError>;
+    /** Records that the content index holds this trace. Repeating it is harmless. */
+    readonly markIndexed: (owner: Owner, id: EventId) => Effect.Effect<void, TraceStoreError>;
   }
 >()("traces/TraceStore") {
   /** In-memory adapter for application tests. Mirrors D1's ordering and case-insensitive LIKE. */
   static readonly memory = Layer.sync(TraceStore, () => {
     const events = new Map<string, Trace>();
+    const indexed = new Set<string>();
     return {
       insert: (trace) =>
         Effect.sync(() => {
-          const key = JSON.stringify([trace.owner, trace.id]);
+          const key = traceKey(trace.owner, trace.id);
           if (events.has(key)) return false;
           events.set(key, trace);
           return true;
@@ -111,8 +134,110 @@ export class TraceStore extends Context.Service<
                 trace.owner === owner &&
                 (trace.sessionId === text || trace.summary.toLowerCase().includes(needle)),
             )
-            .sort((a, b) => b.occurredAt.localeCompare(a.occurredAt) || b.id.localeCompare(a.id))
+            .sort(newestFirst)
             .slice(0, MAX_SEARCH_RESULTS);
+        }),
+      get: (owner, ids) =>
+        Effect.sync(() =>
+          ids.flatMap((id) => {
+            const trace = events.get(traceKey(owner, id));
+            return trace ? [trace] : [];
+          }),
+        ),
+      unindexed: (limit) =>
+        Effect.sync(() =>
+          [...events.entries()]
+            .filter(([key]) => !indexed.has(key))
+            .map(([, trace]) => trace)
+            .sort(newestFirst)
+            .slice(0, limit),
+        ),
+      markIndexed: (owner, id) =>
+        Effect.sync(() => {
+          const key = traceKey(owner, id);
+          if (events.has(key)) indexed.add(key);
+        }),
+    };
+  });
+}
+
+/**
+ * Plain-text projection of a trace for content search: the envelope, then one
+ * `path: value` line per scalar in the raw payload, with strings unescaped so
+ * prompts, commands, and file contents read as written.
+ */
+export const searchText = (trace: Trace): string => {
+  const lines = [
+    `source: ${trace.source}`,
+    `session: ${trace.sessionId}`,
+    `event: ${trace.event}`,
+    `tool: ${trace.summary}`,
+  ];
+  const visit = (value: unknown, path: string): void => {
+    if (Array.isArray(value)) {
+      value.forEach((item, index) => visit(item, `${path}[${index}]`));
+    } else if (typeof value === "object" && value !== null) {
+      for (const [key, item] of Object.entries(value)) visit(item, path ? `${path}.${key}` : key);
+    } else if (value !== null) {
+      lines.push(`${path || "raw"}: ${String(value)}`);
+    }
+  };
+  visit(trace.raw, "");
+  return lines.join("\n");
+};
+
+const searchTerms = (query: SearchQuery) =>
+  query
+    .toLowerCase()
+    .split(/\s+/)
+    .filter((term) => term.length > 0);
+
+/** Full-text index over trace contents. D1 stays the source of truth; this holds a derived copy. */
+export class TraceIndex extends Context.Service<
+  TraceIndex,
+  {
+    /** Upserts the trace's {@link searchText}, keyed by `(owner, id)`, so repeats are idempotent. */
+    readonly index: (trace: Trace) => Effect.Effect<void, TraceIndexError>;
+    /**
+     * IDs of the owner's traces whose text contains every query term, best match
+     * first, at most {@link MAX_CONTENT_RESULTS}.
+     */
+    readonly search: (
+      owner: Owner,
+      query: SearchQuery,
+    ) => Effect.Effect<ReadonlyArray<EventId>, TraceIndexError>;
+  }
+>()("traces/TraceIndex") {
+  /**
+   * In-memory adapter for application tests. Like AI Search's trigram keyword
+   * index, every term must appear as a case-insensitive substring. Ranks by
+   * total term occurrences, then newest first.
+   */
+  static readonly memory = Layer.sync(TraceIndex, () => {
+    const documents = new Map<string, { trace: Trace; text: string }>();
+    return {
+      index: (trace) =>
+        Effect.sync(() => {
+          documents.set(traceKey(trace.owner, trace.id), {
+            trace,
+            text: searchText(trace).toLowerCase(),
+          });
+        }),
+      search: (owner, query) =>
+        Effect.sync(() => {
+          const terms = searchTerms(query);
+          return [...documents.values()]
+            .filter(
+              ({ trace, text }) =>
+                trace.owner === owner && terms.every((term) => text.includes(term)),
+            )
+            .map(({ trace, text }) => ({
+              trace,
+              hits: terms.reduce((total, term) => total + text.split(term).length - 1, 0),
+            }))
+            .sort((a, b) => b.hits - a.hits || newestFirst(a.trace, b.trace))
+            .slice(0, MAX_CONTENT_RESULTS)
+            .map(({ trace }) => trace.id);
         }),
     };
   });
@@ -142,9 +267,26 @@ export const authorize = Effect.fn("Traces.authorize")(function* () {
   return yield* identity.owner;
 });
 
+// Adapter causes are driver and service messages, not payloads.
+const logIndexFailure = (error: TraceIndexError | TraceStoreError) =>
+  Effect.logWarning("Trace indexing deferred to the scheduled sweep", error.cause).pipe(
+    Effect.annotateLogs({ "traces.operation": error.operation }),
+  );
+
+/** Uploads one stored trace's text, then records it so the sweep skips it. */
+const indexStoredTrace = Effect.fn("Traces.index")(function* (trace: Trace) {
+  const index = yield* TraceIndex;
+  const store = yield* TraceStore;
+  yield* index.index(trace);
+  yield* store.markIndexed(trace.owner, trace.id);
+});
+
 /**
  * Authorizes before reading the body, so unidentified callers never cause a parse.
- * Span attributes carry only the source and outcome, never payload fields.
+ * D1 is the source of truth: once the insert succeeds the submission succeeds. A new
+ * trace is indexed immediately when possible; on failure it stays unindexed in D1 and
+ * {@link indexPendingTraces} retries it. Span attributes carry only the source and
+ * outcome, never payload fields.
  */
 export const submitTrace = Effect.fn("Traces.submit")(function* (
   body: Effect.Effect<unknown, InvalidTraceEvent>,
@@ -158,8 +300,19 @@ export const submitTrace = Effect.fn("Traces.submit")(function* (
   if (length > MAX_RAW_LENGTH)
     return yield* new TraceEventTooLarge({ length, limit: MAX_RAW_LENGTH });
   const store = yield* TraceStore;
-  const inserted = yield* store.insert(normalize(owner, input));
-  yield* Effect.annotateCurrentSpan({ "traces.source": input.source, "traces.inserted": inserted });
+  const trace = normalize(owner, input);
+  const inserted = yield* store.insert(trace);
+  const indexed = inserted
+    ? yield* indexStoredTrace(trace).pipe(
+        Effect.as(true),
+        Effect.catch((error) => logIndexFailure(error).pipe(Effect.as(false))),
+      )
+    : false;
+  yield* Effect.annotateCurrentSpan({
+    "traces.source": input.source,
+    "traces.inserted": inserted,
+    "traces.indexed": indexed,
+  });
   return inserted;
 });
 
@@ -173,4 +326,47 @@ export const searchTraces = Effect.fn("Traces.search")(function* (query: unknown
   const traces = yield* store.search(owner, decoded);
   yield* Effect.annotateCurrentSpan("traces.results", traces.length);
   return traces;
+});
+
+/**
+ * Full-text search over the owner's trace contents, best match first. The index
+ * filters by owner, and the stored traces are then read back through the owner's
+ * D1 scope, so a hit from another owner can never be returned. Hits whose trace is
+ * missing from D1 are dropped. The query stays off the span.
+ */
+export const searchTraceContents = Effect.fn("Traces.searchContents")(function* (query: unknown) {
+  const owner = yield* authorize();
+  const decoded = yield* Schema.decodeUnknownEffect(SearchQuery)(query).pipe(
+    Effect.mapError(() => new InvalidSearchQuery()),
+  );
+  const index = yield* TraceIndex;
+  const ids = yield* index.search(owner, decoded);
+  const store = yield* TraceStore;
+  const traces = ids.length === 0 ? [] : yield* store.get(owner, ids);
+  yield* Effect.annotateCurrentSpan("traces.results", traces.length);
+  return traces;
+});
+
+/**
+ * Scheduled sweep: indexes up to {@link INDEX_BATCH_SIZE} stored traces the content
+ * index hasn't confirmed, newest first. It backfills traces stored before content
+ * search existed and retries failed uploads. Runs may overlap or repeat safely,
+ * because uploads upsert by `(owner, id)`. One failing trace doesn't stop the rest.
+ */
+export const indexPendingTraces = Effect.fn("Traces.indexPending")(function* () {
+  const store = yield* TraceStore;
+  const pending = yield* store.unindexed(INDEX_BATCH_SIZE);
+  const outcomes = yield* Effect.forEach(
+    pending,
+    (trace) =>
+      indexStoredTrace(trace).pipe(
+        Effect.as(true),
+        Effect.catch((error) => logIndexFailure(error).pipe(Effect.as(false))),
+      ),
+    { concurrency: 4 },
+  );
+  const indexed = outcomes.filter(Boolean).length;
+  const failed = outcomes.length - indexed;
+  yield* Effect.annotateCurrentSpan({ "traces.indexed": indexed, "traces.failed": failed });
+  return { indexed, failed };
 });

@@ -10,10 +10,13 @@ import {
   authorize,
   InvalidSearchQuery,
   InvalidTraceEvent,
+  MAX_CONTENT_RESULTS,
   MAX_QUERY_LENGTH,
+  searchTraceContents,
   searchTraces,
   submitTrace,
   type TraceEventTooLarge,
+  type TraceIndexError,
   type TraceStoreError,
   type Unauthenticated,
 } from "./traces.ts";
@@ -47,13 +50,20 @@ const logStoreFailure = (error: TraceStoreError) =>
     Effect.annotateLogs({ "traces.operation": error.operation }),
   );
 
+// Search-service causes are binding errors, not queries or document text.
+const logIndexFailure = (error: TraceIndexError) =>
+  Effect.logError("Trace content search failed", error.cause).pipe(
+    Effect.annotateLogs({ "traces.operation": error.operation }),
+  );
+
 const httpFailure = (
   error:
     | Unauthenticated
     | InvalidTraceEvent
     | TraceEventTooLarge
     | InvalidSearchQuery
-    | TraceStoreError,
+    | TraceStoreError
+    | TraceIndexError,
 ) => {
   switch (error._tag) {
     case "Unauthenticated":
@@ -67,6 +77,10 @@ const httpFailure = (
     case "TraceStoreError":
       return logStoreFailure(error).pipe(
         Effect.as(json({ error: "Trace storage unavailable" }, 503)),
+      );
+    case "TraceIndexError":
+      return logIndexFailure(error).pipe(
+        Effect.as(json({ error: "Trace content search unavailable" }, 503)),
       );
   }
 };
@@ -100,6 +114,15 @@ const tools = [
     },
   },
   {
+    name: "search_trace_contents",
+    description: `Full-text search over trace payloads: prompts, tool inputs, and tool results. Every whitespace-separated term must appear; terms match substrings, case-insensitively, and should be at least 3 characters. Best match first, at most ${MAX_CONTENT_RESULTS}. A new event can take a minute or two to become searchable.`,
+    inputSchema: {
+      type: "object",
+      properties: { query: { type: "string" } },
+      required: ["query"],
+    },
+  },
+  {
     name: "inspect_hooks",
     description:
       "Read setup instructions for remote MCP and opt-in agent hooks; never changes files.",
@@ -122,6 +145,14 @@ const callTool = Effect.fn("Mcp.callTool")(function* (params: unknown) {
         Effect.mapError(() => new InvalidSearchQuery()),
       );
       const traces = yield* searchTraces(args.query);
+      return { content: [{ type: "text", text: JSON.stringify(traces) }] };
+    }
+    case "search_trace_contents": {
+      yield* Effect.annotateCurrentSpan("mcp.tool", call.name);
+      const args = yield* Schema.decodeUnknownEffect(SearchArguments)(call.arguments).pipe(
+        Effect.mapError(() => new InvalidSearchQuery()),
+      );
+      const traces = yield* searchTraceContents(args.query);
       return { content: [{ type: "text", text: JSON.stringify(traces) }] };
     }
     default:
@@ -175,6 +206,8 @@ const mcp = Effect.gen(function* () {
       InvalidSearchQuery: () => Effect.succeed(failure(-32602, "Invalid query")),
       TraceStoreError: (error) =>
         logStoreFailure(error).pipe(Effect.as(failure(-32603, "Trace storage unavailable"))),
+      TraceIndexError: (error) =>
+        logIndexFailure(error).pipe(Effect.as(failure(-32603, "Trace content search unavailable"))),
     }),
   );
 });
@@ -215,6 +248,15 @@ export const apiRoutes = Layer.mergeAll(
       const request = yield* HttpServerRequest.HttpServerRequest;
       const query = new URL(request.url, "http://local").searchParams.get("q") ?? "";
       return json({ events: yield* searchTraces(query) });
+    }).pipe(Effect.catch(httpFailure)),
+  ),
+  HttpRouter.add(
+    "GET",
+    "/api/search",
+    Effect.gen(function* () {
+      const request = yield* HttpServerRequest.HttpServerRequest;
+      const query = new URL(request.url, "http://local").searchParams.get("q") ?? "";
+      return json({ events: yield* searchTraceContents(query) });
     }).pipe(Effect.catch(httpFailure)),
   ),
   HttpRouter.add("POST", "/mcp", mcp.pipe(Effect.catch(httpFailure))),

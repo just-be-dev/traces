@@ -11,7 +11,15 @@ import * as Tracer from "effect/Tracer";
 import { apiRoutes, traceRequest } from "./api.ts";
 import { InstallAddress } from "./install.ts";
 import { AppInfo } from "./service.ts";
-import { Identity, Owner, TraceStore, TraceStoreError, Unauthenticated } from "./traces.ts";
+import {
+  Identity,
+  Owner,
+  TraceIndex,
+  TraceIndexError,
+  TraceStore,
+  TraceStoreError,
+  Unauthenticated,
+} from "./traces.ts";
 
 const installAddress = Layer.succeed(InstallAddress, {
   apiUrl: Effect.succeed("https://api.example.test"),
@@ -21,10 +29,28 @@ const anonymous = Layer.succeed(Identity, { owner: Effect.fail(new Unauthenticat
 const untouchedStore = Layer.succeed(TraceStore, {
   insert: () => Effect.die("unexpected write"),
   search: () => Effect.die("unexpected read"),
+  get: () => Effect.die("unexpected read"),
+  unindexed: () => Effect.die("unexpected read"),
+  markIndexed: () => Effect.die("unexpected write"),
 });
+const storeFailure = (operation: TraceStoreError["operation"]) =>
+  Effect.fail(new TraceStoreError({ operation, cause: new Error("D1") }));
 const failingStore = Layer.succeed(TraceStore, {
-  insert: () => Effect.fail(new TraceStoreError({ operation: "insert", cause: new Error("D1") })),
-  search: () => Effect.fail(new TraceStoreError({ operation: "search", cause: new Error("D1") })),
+  insert: () => storeFailure("insert"),
+  search: () => storeFailure("search"),
+  get: () => storeFailure("get"),
+  unindexed: () => storeFailure("unindexed"),
+  markIndexed: () => storeFailure("markIndexed"),
+});
+const untouchedIndex = Layer.succeed(TraceIndex, {
+  index: () => Effect.die("unexpected index"),
+  search: () => Effect.die("unexpected search"),
+});
+const indexFailure = (operation: TraceIndexError["operation"]) =>
+  Effect.fail(new TraceIndexError({ operation, cause: new Error("AI Search unavailable") }));
+const failingIndex = Layer.succeed(TraceIndex, {
+  index: () => indexFailure("index"),
+  search: () => indexFailure("search"),
 });
 
 // Serves requests the way the API Worker does: router wrapped in the request span.
@@ -32,6 +58,7 @@ const serve = (
   identity: Layer.Layer<Identity>,
   store: Layer.Layer<TraceStore>,
   name = "Traces",
+  index: Layer.Layer<TraceIndex> = TraceIndex.memory,
 ) => {
   const spans: Array<Tracer.NativeSpan> = [];
   const tracer = Tracer.make({
@@ -49,7 +76,14 @@ const serve = (
     });
   });
   const runtime = ManagedRuntime.make(
-    Layer.mergeAll(AppInfo.layer(name), installAddress, identity, store, Logger.layer([capture])),
+    Layer.mergeAll(
+      AppInfo.layer(name),
+      installAddress,
+      identity,
+      store,
+      index,
+      Logger.layer([capture]),
+    ),
   );
   const handler = (request: Request) =>
     runtime.runPromise(
@@ -135,7 +169,7 @@ test("authenticated ingestion preserves source payloads, deduplicates, and searc
 });
 
 test("malformed submissions, queries, and MCP calls are rejected without storage access", async () => {
-  const { handler, dispose } = serve(signedIn, untouchedStore);
+  const { handler, dispose } = serve(signedIn, untouchedStore, "Traces", untouchedIndex);
   try {
     expect((await handler(post("/api/events", {}))).status).toBe(400);
     expect((await handler(post("/api/events", "{not json"))).status).toBe(400);
@@ -146,6 +180,10 @@ test("malformed submissions, queries, and MCP calls are rejected without storage
     expect(oversized.status).toBe(413);
     expect((await handler(new Request("http://app/api/events"))).status).toBe(400);
     expect((await handler(new Request(`http://app/api/events?q=${"x".repeat(201)}`))).status).toBe(
+      400,
+    );
+    expect((await handler(new Request("http://app/api/search"))).status).toBe(400);
+    expect((await handler(new Request(`http://app/api/search?q=${"x".repeat(201)}`))).status).toBe(
       400,
     );
     const error = async (request: Request) => (await body(await handler(request))).error;
@@ -173,6 +211,9 @@ test("malformed submissions, queries, and MCP calls are rejected without storage
       code: -32602,
       message: "Invalid parameters",
     });
+    expect(
+      await error(rpc(5, "tools/call", { name: "search_trace_contents", arguments: {} })),
+    ).toEqual({ code: -32602, message: "Invalid query" });
   } finally {
     await dispose();
   }
@@ -206,9 +247,10 @@ test("storage failures answer 503 or a JSON-RPC internal error instead of crashi
 });
 
 test("unidentified requests cannot read or submit traces or invoke MCP", async () => {
-  const { handler, dispose } = serve(anonymous, untouchedStore);
+  const { handler, dispose } = serve(anonymous, untouchedStore, "Traces", untouchedIndex);
   try {
     for (const [path, method] of [
+      ["/api/search?q=private", "GET"],
       ["/api/events", "GET"],
       ["/api/events", "POST"],
       ["/mcp", "POST"],
@@ -222,6 +264,77 @@ test("unidentified requests cannot read or submit traces or invoke MCP", async (
   }
 });
 
+test("content search finds payload text over HTTP and MCP, scoped to the signed-in owner", async () => {
+  const { handler, dispose } = serve(signedIn, TraceStore.memory);
+  try {
+    expect((await handler(post("/api/events", event))).status).toBe(201);
+    const other = { ...event, id: "event-2", raw: { tool_input: { file: "notes.md" } } };
+    expect((await handler(post("/api/events", other))).status).toBe(201);
+    const search = await handler(new Request("http://app/api/search?q=PRIVATE.t"));
+    expect(search.status).toBe(200);
+    expect(search.headers.get("cache-control")).toBe("no-store");
+    expect(await body(search)).toEqual({ events: [stored] });
+    expect(await body(await handler(new Request("http://app/api/search?q=private+notes")))).toEqual(
+      { events: [] },
+    );
+    const tools = await body(await handler(rpc(1, "tools/list")));
+    expect(tools.result.tools.map((tool: { name: string }) => tool.name)).toEqual([
+      "search_traces",
+      "search_trace_contents",
+      "inspect_hooks",
+    ]);
+    const mcp = await handler(
+      rpc(2, "tools/call", { name: "search_trace_contents", arguments: { query: "notes.md" } }),
+    );
+    expect(JSON.parse((await body(mcp)).result.content[0].text)).toEqual([
+      { ...stored, id: "event-2", raw: other.raw, summary: "PostToolUse" },
+    ]);
+  } finally {
+    await dispose();
+  }
+  // Another owner's identity sees none of it.
+  const stranger = serve(
+    Layer.succeed(Identity, { owner: Effect.succeed(Owner.make("stranger")) }),
+    TraceStore.memory,
+  );
+  try {
+    expect(
+      await body(await stranger.handler(new Request("http://app/api/search?q=private"))),
+    ).toEqual({ events: [] });
+  } finally {
+    await stranger.dispose();
+  }
+});
+
+test("an index outage keeps ingestion working and content search answers 503 or -32603", async () => {
+  const { handler, logs, dispose } = serve(signedIn, TraceStore.memory, "Traces", failingIndex);
+  try {
+    expect((await handler(post("/api/events", event))).status).toBe(201);
+    expect(await body(await handler(new Request("http://app/api/events?q=session-A")))).toEqual({
+      events: [stored],
+    });
+    const search = await handler(new Request("http://app/api/search?q=private"));
+    expect(search.status).toBe(503);
+    expect(await body(search)).toEqual({ error: "Trace content search unavailable" });
+    const mcp = await handler(
+      rpc(1, "tools/call", { name: "search_trace_contents", arguments: { query: "private" } }),
+    );
+    expect((await body(mcp)).error).toEqual({
+      code: -32603,
+      message: "Trace content search unavailable",
+    });
+    expect(logs.map((log) => log.annotations)).toEqual([
+      { "traces.operation": "index" },
+      { "traces.operation": "search" },
+      { "traces.operation": "search" },
+    ]);
+    const logged = JSON.stringify(logs);
+    for (const secret of ["session-A", "private", "event-1"]) expect(logged).not.toContain(secret);
+  } finally {
+    await dispose();
+  }
+});
+
 test("requests produce named spans without queries or payloads in attributes", async () => {
   const { handler, spans, dispose } = serve(signedIn, TraceStore.memory);
   try {
@@ -230,6 +343,7 @@ test("requests produce named spans without queries or payloads in attributes", a
     await handler(
       rpc(1, "tools/call", { name: "search_traces", arguments: { query: "session-A" } }),
     );
+    await handler(new Request("http://app/api/search?q=private.txt"));
 
     const names = spans.map((span) => span.name);
     for (const name of [
@@ -237,6 +351,8 @@ test("requests produce named spans without queries or payloads in attributes", a
       "Traces.authorize",
       "Traces.submit",
       "Traces.search",
+      "Traces.searchContents",
+      "Traces.index",
       "Mcp.dispatch",
       "Mcp.callTool",
     ])
@@ -246,9 +362,12 @@ test("requests produce named spans without queries or payloads in attributes", a
     expect(Object.fromEntries(submit?.attributes ?? [])).toEqual({
       "traces.source": "claude-code",
       "traces.inserted": true,
+      "traces.indexed": true,
     });
+    const contents = spans.find((span) => span.name === "Traces.searchContents");
+    expect(Object.fromEntries(contents?.attributes ?? [])).toEqual({ "traces.results": 1 });
     const requests = spans.filter((span) => span.name === "Api.request");
-    expect(requests.map((span) => span.kind)).toEqual(["server", "server", "server"]);
+    expect(requests.map((span) => span.kind)).toEqual(["server", "server", "server", "server"]);
     expect(Object.fromEntries(requests[1]?.attributes ?? [])).toEqual({
       "http.request.method": "GET",
       "url.path": "/api/events",

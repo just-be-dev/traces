@@ -6,6 +6,8 @@ import * as Layer from "effect/Layer";
 import { InstallAddress } from "../../install.ts";
 import { AppInfo } from "../../service.ts";
 import { apiRoutes, traceRequest } from "../../api.ts";
+import { indexPendingTraces } from "../../traces.ts";
+import { ContentSearch, contentIndex } from "./search.ts";
 import { Database, identity, storage } from "./traces.ts";
 
 // Prototype volume: keep every request. Lower both rates together once traffic grows.
@@ -52,17 +54,31 @@ export default class Api extends Cloudflare.Worker<Api>()(
   },
   Effect.gen(function* () {
     const db = yield* Cloudflare.D1.QueryDatabase(yield* Database);
+    // AI Search has no local emulation: `alchemy dev` creates a real instance and proxies to it.
+    const contents = yield* Cloudflare.AI.QuerySearch(yield* ContentSearch);
     const runtime = yield* Alchemy.RuntimeContext;
     const context = yield* Cloudflare.WorkerExecutionContext;
     const url = yield* Cloudflare.Worker.URL;
     const withRuntime = Effect.provideService(Alchemy.RuntimeContext, runtime);
     const services = Layer.mergeAll(
       storage(db.raw.pipe(withRuntime)),
+      contentIndex(contents.raw.pipe(withRuntime)),
       identity(context.access.pipe(withRuntime)),
       Layer.succeed(InstallAddress, {
         apiUrl: url.pipe(withRuntime),
       }),
       AppInfo.layer("Traces"),
+    );
+    // Backfills traces stored before content search existed and retries failed uploads.
+    yield* Cloudflare.Workers.cron("* * * * *", () =>
+      indexPendingTraces().pipe(
+        Effect.catch((error) =>
+          Effect.logError("Content index sweep failed", error.cause).pipe(
+            Effect.annotateLogs({ "traces.operation": error.operation }),
+          ),
+        ),
+        Effect.provide(services),
+      ),
     );
     const handler = yield* HttpRouter.toHttpEffect(apiRoutes);
     return {
@@ -72,6 +88,8 @@ export default class Api extends Cloudflare.Worker<Api>()(
     Effect.provide(
       Layer.mergeAll(
         Cloudflare.D1.QueryDatabaseBinding,
+        Cloudflare.AI.QuerySearchBinding,
+        Cloudflare.Workers.CronEventSourceLive,
         // Mirrors Effect.fn and Effect.withSpan spans into the Workers trace waterfall.
         Cloudflare.Telemetry(sampling),
         Alchemy.RuntimeContext.phantom,

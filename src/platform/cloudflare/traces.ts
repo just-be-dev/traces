@@ -4,6 +4,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import {
+  type EventId,
   Identity,
   MAX_SEARCH_RESULTS,
   Owner,
@@ -15,7 +16,8 @@ import {
 
 export const Database = Cloudflare.D1.Database("Traces", { migrations: "migrations" });
 
-// Column layout of `events` (migrations/0001_events.sql).
+// Columns of `events` that make up a Trace (migrations/0001_events.sql). `indexed_at`
+// (0002_content_index.sql) is bookkeeping for the content index and never leaves D1.
 const StoredTrace = Schema.Struct({
   owner: Schema.String,
   id: Schema.String,
@@ -44,8 +46,11 @@ const decodeStoredTrace = (row: unknown) =>
     });
   });
 
+const TRACE_COLUMNS = "owner, id, source, session_id, event, occurred_at, summary, raw";
+
 // A row that no longer decodes is skipped and logged by event ID only. The raw
 // column stays in D1 untouched so a later schema or migration can reinterpret it.
+// The content-index sweep reads newest first, so such rows can't starve new traces.
 const decodeSearchResults = Effect.fn("TraceStore.decodeResults")(function* (
   rows: ReadonlyArray<unknown>,
 ) {
@@ -112,13 +117,61 @@ export const storage = (raw: Effect.Effect<D1Statements>) =>
         try: () =>
           d1
             .prepare(
-              `SELECT owner, id, source, session_id, event, occurred_at, summary, raw FROM events WHERE owner = ? AND (session_id = ? OR summary LIKE ? ESCAPE '\\') ORDER BY occurred_at DESC, id DESC LIMIT ${MAX_SEARCH_RESULTS}`,
+              `SELECT ${TRACE_COLUMNS} FROM events WHERE owner = ? AND (session_id = ? OR summary LIKE ? ESCAPE '\\') ORDER BY occurred_at DESC, id DESC LIMIT ${MAX_SEARCH_RESULTS}`,
             )
             .bind(owner, text, `%${text.replace(/[\\%_]/g, "\\$&")}%`)
             .all(),
         catch: (cause) => new TraceStoreError({ operation: "search", cause }),
       });
       return yield* decodeSearchResults(result.results);
+    }),
+    get: Effect.fn("TraceStore.get")(function* (owner: Owner, ids: ReadonlyArray<EventId>) {
+      if (ids.length === 0) return [];
+      const d1 = yield* raw;
+      const result = yield* Effect.tryPromise({
+        try: () =>
+          d1
+            .prepare(
+              `SELECT ${TRACE_COLUMNS} FROM events WHERE owner = ? AND id IN (${ids.map(() => "?").join(", ")})`,
+            )
+            .bind(owner, ...ids)
+            .all(),
+        catch: (cause) => new TraceStoreError({ operation: "get", cause }),
+      });
+      const traces = yield* decodeSearchResults(result.results);
+      // Restore the caller's ranking; IN () returns rows in storage order.
+      const byId = new Map<EventId, Trace>(traces.map((trace) => [trace.id, trace]));
+      return ids.flatMap((id) => {
+        const trace = byId.get(id);
+        return trace ? [trace] : [];
+      });
+    }),
+    unindexed: Effect.fn("TraceStore.unindexed")(function* (limit: number) {
+      const d1 = yield* raw;
+      const result = yield* Effect.tryPromise({
+        try: () =>
+          d1
+            .prepare(
+              `SELECT ${TRACE_COLUMNS} FROM events WHERE indexed_at IS NULL ORDER BY occurred_at DESC, id DESC LIMIT ?`,
+            )
+            .bind(limit)
+            .all(),
+        catch: (cause) => new TraceStoreError({ operation: "unindexed", cause }),
+      });
+      return yield* decodeSearchResults(result.results);
+    }),
+    markIndexed: Effect.fn("TraceStore.markIndexed")(function* (owner: Owner, id: EventId) {
+      const d1 = yield* raw;
+      yield* Effect.tryPromise({
+        try: () =>
+          d1
+            .prepare(
+              "UPDATE events SET indexed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE owner = ? AND id = ?",
+            )
+            .bind(owner, id)
+            .run(),
+        catch: (cause) => new TraceStoreError({ operation: "markIndexed", cause }),
+      });
     }),
   });
 

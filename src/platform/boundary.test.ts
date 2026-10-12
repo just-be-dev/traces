@@ -21,7 +21,7 @@ test("backend domains don't depend on platform adapters, SDKs, or Cloudflare glo
     }
     const globals =
       source.match(
-        /\b(?:DurableObjectStorage|DurableObjectState|D1Database|Ai|ExecutionContext|SqlStorage)\b/g,
+        /\b(?:DurableObjectStorage|DurableObjectState|D1Database|Ai|AiSearchInstance|AiSearchNamespace|ExecutionContext|SqlStorage)\b/g,
       ) ?? [];
     violations.push(...globals.map((name) => `${path}: ${name}`));
   }

@@ -9,7 +9,7 @@ mise run build
 mise run dev
 ```
 
-Alchemy prints separate Website and API Worker URLs. Visit **`/install` on the Website URL** for public agent-readable Markdown with per-client MCP registration and opt-in hook instructions; it embeds the actual API Worker URL. The API Worker accepts `GET /api/health`, `POST /api/events`, `GET /api/events?q=<session-or-tool>`, and stateless Streamable HTTP `POST /mcp` (tools: `search_traces` and read-only `inspect_hooks`). Local dev simulates Cloudflare Access. Production private routes fail closed without an authenticated Access context. Do **not** use this prototype with sensitive real traces until retention, redaction, limits, and OAuth-client interoperability have been reviewed.
+Alchemy prints separate Website and API Worker URLs. Visit **`/install` on the Website URL** for public agent-readable Markdown with per-client MCP registration and opt-in hook instructions; it embeds the actual API Worker URL. The API Worker accepts `GET /api/health`, `POST /api/events`, `GET /api/events?q=<session-or-tool>`, full-text `GET /api/search?q=<words>` over payload contents, and stateless Streamable HTTP `POST /mcp` (tools: `search_traces`, `search_trace_contents` and read-only `inspect_hooks`). Local dev simulates Cloudflare Access. Production private routes fail closed without an authenticated Access context. Do **not** use this prototype with sensitive real traces until retention, redaction, limits, and OAuth-client interoperability have been reviewed.
 
 An example local event:
 
@@ -17,8 +17,9 @@ An example local event:
 curl -X POST "$API_URL/api/events" -H 'content-type: application/json' \
   -d '{"id":"example-1","source":"claude-code","sessionId":"session-1","event":"PostToolUse","occurredAt":"2026-10-09T12:00:00Z","raw":{"tool_name":"Read","tool_input":{"file_path":"README.md"}}}'
 curl "$API_URL/api/events?q=session-1"
+curl "$API_URL/api/search?q=README"
 ```
 
 See [architecture, Access and hook integration plan](docs/traces.md). The [original Cloudflare guide](docs/cloudflare.md) and [tooling guide](docs/tooling.md) remain useful for the underlying template. This project was adapted from [effect-cloudflare-foldkit-template](https://github.com/just-be-dev/effect-cloudflare-foldkit-template).
 
-Deploying, changing Cloudflare Access policies, provisioning service tokens, or pushing this repository needs explicit approval. Before deploying, set `TRACES_ACCESS_EMAIL` (and optionally `TRACES_ACCESS_SERVICE_TOKEN_ID`); the default email policy intentionally admits no one. Local `mise run dev` does not create remote Cloudflare resources.
+Deploying, changing Cloudflare Access policies, provisioning service tokens, or pushing this repository needs explicit approval. Before deploying, set `TRACES_ACCESS_EMAIL` (and optionally `TRACES_ACCESS_SERVICE_TOKEN_ID`); the default email policy intentionally admits no one. Local `mise run dev` emulates D1 locally, but **AI Search has no local emulation**: dev creates a real AI Search instance in your Cloudflare account for the dev stage and indexes the events you submit there. Full-text search billing starts November 1, 2026.

@@ -50,6 +50,7 @@
   },
   "patchedDependencies": {
     "@foldkit/vite-plugin@0.26.0": "patches/@foldkit%2Fvite-plugin@0.26.0.patch",
-    "@foldkit/devtools-mcp@0.24.0": "patches/@foldkit%2Fdevtools-mcp@0.24.0.patch"
+    "@foldkit/devtools-mcp@0.24.0": "patches/@foldkit%2Fdevtools-mcp@0.24.0.patch",
+    "alchemy@2.0.0-beta.81": "patches/alchemy@2.0.0-beta.81.patch"
   }
 }

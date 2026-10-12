@@ -26,3 +26,17 @@ Patches `@foldkit/vite-plugin@0.26.0` and `@foldkit/devtools-mcp@0.24.0`.
 - Alchemy's `handleWebSocket` stops forwarding upgrades that another listener has already handled, or only forwards paths the worker serves.
 
 The backoff patch is worth keeping until Foldkit has its own backoff. It stops the loop whatever the cause of the drop.
+
+## Alchemy AI Search built-in storage
+
+Patches `alchemy@2.0.0-beta.81` (`src/`, `lib/*.js` and `lib/*.d.ts` of `Cloudflare/AI/SearchInstance`, because Bun loads `src` while types and Node load `lib`).
+
+**Symptom.** `Cloudflare.AI.SearchInstance` could only declare R2 or web-crawler instances. Traces needs a built-in-storage instance that the Worker fills through the Items binding (`items.upload`), so new events are searchable right away instead of after an R2 sync.
+
+**Cause.** Cloudflare creates a built-in-storage instance when the create request omits `type` and `source`. The provider requires `source` and always sends `type: news.type ?? "r2"`. It also maps an instance with no reported type to `"r2"`, which would make every later plan diff as a replacement.
+
+**Patch.** Adds `"builtin"` to `SearchInstanceSourceType` and makes `source` optional. On create, `type: "builtin"` omits `type`, and `undefined` body fields are stripped. On read, an instance with neither type nor source maps to `"builtin"`, so it diffs as unchanged.
+
+**Remove when** Alchemy can declare a built-in-storage AI Search instance and reads one back without a replacement diff. Then switch `src/platform/cloudflare/search.ts` to the upstream form.
+
+**Not yet verified against the live API.** Tests cover the adapter with a fake binding. The first `mise run dev` must confirm that the instance is created, a second plan shows no change, and an uploaded event is searchable.
