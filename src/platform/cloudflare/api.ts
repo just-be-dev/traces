@@ -1,12 +1,15 @@
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as Alchemy from "alchemy";
+import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
 import * as HttpRouter from "effect/http/HttpRouter";
 import * as Layer from "effect/Layer";
-import { InstallAddress } from "../../install.ts";
+import { InstallAddress } from "../../install/guide.ts";
 import { AppInfo } from "../../service.ts";
 import { apiRoutes, traceRequest } from "../../api.ts";
 import { indexPendingTraces } from "../../traces.ts";
+import { sessions, uploaders } from "./ingest.ts";
+import { apiRoutes as accessRoutes } from "./domain.ts";
 import { ContentSearch, contentIndex } from "./search.ts";
 import { Database, identity, storage } from "./traces.ts";
 
@@ -48,6 +51,7 @@ export default class Api extends Cloudflare.Worker<Api>()(
   {
     main: import.meta.url,
     access: Access,
+    routes: accessRoutes,
     dev: { access: { aud: "local", identity: { email: "local@example.invalid" } } },
     compatibility: { date: "2026-10-04" },
     observability,
@@ -59,13 +63,20 @@ export default class Api extends Cloudflare.Worker<Api>()(
     const runtime = yield* Alchemy.RuntimeContext;
     const context = yield* Cloudflare.WorkerExecutionContext;
     const url = yield* Cloudflare.Worker.URL;
+    // Bound at deploy from the same TRACES_DOMAIN as the routes; empty in dev. On the
+    // public domain, MCP is served at https://<domain>/mcp through an API route.
+    const domain = yield* Config.String("TRACES_DOMAIN").pipe(Config.withDefault(""));
+    const publicUrl = domain ? `https://${domain}` : undefined;
     const withRuntime = Effect.provideService(Alchemy.RuntimeContext, runtime);
+    const d1 = db.raw.pipe(withRuntime);
     const services = Layer.mergeAll(
-      storage(db.raw.pipe(withRuntime)),
+      storage(d1),
+      uploaders(d1),
+      sessions(d1),
       contentIndex(contents.raw.pipe(withRuntime)),
       identity(context.access.pipe(withRuntime)),
       Layer.succeed(InstallAddress, {
-        apiUrl: url.pipe(withRuntime),
+        apiUrl: publicUrl ? Effect.succeed(publicUrl) : url.pipe(withRuntime),
       }),
       AppInfo.layer("Traces"),
     );

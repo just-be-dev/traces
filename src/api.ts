@@ -4,7 +4,32 @@ import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
-import { readInstallInstructions } from "./install.ts";
+import {
+  claimUploader,
+  createUploader,
+  ingestBatch,
+  InvalidClaimCode,
+  InvalidIngestBatch,
+  type IngestStoreError,
+  listUploaders,
+  MAX_BATCH_BYTES,
+  MAX_BATCH_ENTRIES,
+  recentSessions,
+  revokeUploader,
+} from "./ingest.ts";
+import { readInstallGuide } from "./install/guide.ts";
+import {
+  allSkillFiles,
+  directoryAtUri,
+  fileAtPath,
+  fileAtUri,
+  SKILL_NAME,
+  SKILL_TTL_MS,
+  skillEntry,
+  skillManifest,
+  SKILLS_EXTENSION,
+  skillUri,
+} from "./install/skill.ts";
 import { AppInfo } from "./service.ts";
 import {
   authorize,
@@ -15,7 +40,7 @@ import {
   searchTraceContents,
   searchTraces,
   submitTrace,
-  type TraceEventTooLarge,
+  TraceEventTooLarge,
   type TraceIndexError,
   type TraceStoreError,
   type Unauthenticated,
@@ -50,6 +75,12 @@ const logStoreFailure = (error: TraceStoreError) =>
     Effect.annotateLogs({ "traces.operation": error.operation }),
   );
 
+// Ingest-store causes are SQL and driver messages, never tokens or payloads.
+const logIngestStoreFailure = (error: IngestStoreError) =>
+  Effect.logError("Ingest storage failed", error.cause).pipe(
+    Effect.annotateLogs({ "traces.operation": error.operation }),
+  );
+
 // Search-service causes are binding errors, not queries or document text.
 const logIndexFailure = (error: TraceIndexError) =>
   Effect.logError("Trace content search failed", error.cause).pipe(
@@ -63,15 +94,30 @@ const httpFailure = (
     | TraceEventTooLarge
     | InvalidSearchQuery
     | TraceStoreError
-    | TraceIndexError,
+    | TraceIndexError
+    | InvalidIngestBatch
+    | InvalidClaimCode
+    | IngestStoreError,
 ) => {
   switch (error._tag) {
     case "Unauthenticated":
       return Effect.succeed(json({ error: "Unauthorized" }, 401));
     case "InvalidTraceEvent":
       return Effect.succeed(json({ error: "Invalid trace event" }, 400));
+    case "InvalidIngestBatch":
+      return Effect.succeed(
+        json({ error: `Invalid ingest batch (1–${MAX_BATCH_ENTRIES} entries)` }, 400),
+      );
+    case "InvalidClaimCode":
+      return Effect.succeed(json({ error: "Invalid or expired claim code" }, 401));
     case "TraceEventTooLarge":
-      return Effect.succeed(json({ error: "Trace event exceeds 64 KB" }, 413));
+      return Effect.succeed(
+        json({ error: `Trace event exceeds ${Math.round(error.limit / 1000)} KB` }, 413),
+      );
+    case "IngestStoreError":
+      return logIngestStoreFailure(error).pipe(
+        Effect.as(json({ error: "Ingest storage unavailable" }, 503)),
+      );
     case "InvalidSearchQuery":
       return Effect.succeed(json({ error: `q must be 1–${MAX_QUERY_LENGTH} characters` }, 400));
     case "TraceStoreError":
@@ -97,6 +143,8 @@ const JsonRpcRequest = Schema.Struct({
 });
 const ToolCall = Schema.Struct({ name: Schema.String, arguments: Schema.optional(Schema.Unknown) });
 const SearchArguments = Schema.Struct({ query: Schema.String });
+const SkillFileArguments = Schema.Struct({ path: Schema.optional(Schema.String) });
+const UriParams = Schema.Struct({ uri: Schema.String });
 
 class JsonRpcError extends Schema.TaggedError<JsonRpcError>()("JsonRpcError", {
   code: Schema.Int,
@@ -124,9 +172,53 @@ const tools = [
   },
   {
     name: "inspect_hooks",
+    description: `Read a file of the ${SKILL_NAME} skill, which installs turn-end trace upload hooks for Claude Code, Codex, or pi. Defaults to SKILL.md; pass a relative path such as references/codex.md for the others. Prefer reading the MCP resource ${skillUri("SKILL.md")} when your client supports resources. Never changes files.`,
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: { type: "string", enum: allSkillFiles.map((file) => file.path) },
+      },
+    },
+    annotations: { readOnlyHint: true },
+  },
+  {
+    name: "create_uploader",
     description:
-      "Read setup instructions for remote MCP and opt-in agent hooks; never changes files.",
+      "Create an upload credential for this machine's agent harness. Returns a single-use claimCode valid for 10 minutes; exchange it immediately with `traces.ts login --url <ORIGIN> --code <claimCode>` as the install-traces skill describes. Never ask the user for, or print, the resulting token.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        harness: { type: "string", enum: ["claude-code", "codex", "pi"] },
+        label: { type: "string", description: "e.g. '<hostname> <harness>'", maxLength: 100 },
+      },
+      required: ["harness"],
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false },
+  },
+  {
+    name: "list_uploaders",
+    description:
+      "List upload credentials with their harness, creation, claim, last use, and revocation times.",
     inputSchema: { type: "object", properties: {} },
+    annotations: { readOnlyHint: true },
+  },
+  {
+    name: "revoke_uploader",
+    description:
+      "Revoke an upload credential by ID. Its token stops working immediately; already uploaded traces are kept.",
+    inputSchema: {
+      type: "object",
+      properties: { id: { type: "string" } },
+      required: ["id"],
+    },
+    annotations: { readOnlyHint: false, destructiveHint: true },
+  },
+  {
+    name: "list_sessions",
+    description:
+      "Most recently uploaded sessions with harness, harness version, uploader, host, working directory, entry count, and upload times. Use it to verify that trace upload works.",
+    inputSchema: { type: "object", properties: {} },
+    annotations: { readOnlyHint: true },
   },
 ];
 
@@ -137,7 +229,30 @@ const callTool = Effect.fn("Mcp.callTool")(function* (params: unknown) {
   switch (call.name) {
     case "inspect_hooks": {
       yield* Effect.annotateCurrentSpan("mcp.tool", call.name);
-      return { content: [{ type: "text", text: yield* readInstallInstructions() }] };
+      const args = yield* Schema.decodeUnknownEffect(SkillFileArguments)(call.arguments ?? {}).pipe(
+        Effect.mapError(() => new JsonRpcError({ code: -32602, message: "Invalid parameters" })),
+      );
+      const file = fileAtPath(args.path ?? "SKILL.md");
+      if (!file) return yield* new JsonRpcError({ code: -32602, message: "Unknown skill file" });
+      return { content: [{ type: "text", text: file.text }] };
+    }
+    case "create_uploader": {
+      yield* Effect.annotateCurrentSpan("mcp.tool", call.name);
+      const created = yield* createUploader(call.arguments);
+      return { content: [{ type: "text", text: JSON.stringify(created) }] };
+    }
+    case "list_uploaders": {
+      yield* Effect.annotateCurrentSpan("mcp.tool", call.name);
+      return { content: [{ type: "text", text: JSON.stringify(yield* listUploaders()) }] };
+    }
+    case "revoke_uploader": {
+      yield* Effect.annotateCurrentSpan("mcp.tool", call.name);
+      const revoked = yield* revokeUploader(call.arguments);
+      return { content: [{ type: "text", text: JSON.stringify({ revoked }) }] };
+    }
+    case "list_sessions": {
+      yield* Effect.annotateCurrentSpan("mcp.tool", call.name);
+      return { content: [{ type: "text", text: JSON.stringify(yield* recentSessions()) }] };
     }
     case "search_traces": {
       yield* Effect.annotateCurrentSpan("mcp.tool", call.name);
@@ -160,21 +275,77 @@ const callTool = Effect.fn("Mcp.callTool")(function* (params: unknown) {
   }
 });
 
+const serverInfo = { name: "traces", version: "0.2.0" };
+const capabilities = {
+  tools: {},
+  resources: {},
+  extensions: { [SKILLS_EXTENSION]: { directoryRead: true } },
+};
+const instructions = `Search the user's coding-agent traces. To set up trace uploads from this machine, load the ${SKILL_NAME} skill (${skillUri("SKILL.md")}) by reading it as a resource, or call inspect_hooks if resources aren't available.`;
+// Skill results carry the Skills extension's cache fields; content changes only on deploy.
+const cached = { resultType: "complete", ttlMs: SKILL_TTL_MS, cacheScope: "public" } as const;
+
+const unknownResource = new JsonRpcError({ code: -32602, message: "Unknown resource" });
+
+const decodeUri = (params: unknown) =>
+  Schema.decodeUnknownEffect(UriParams)(params).pipe(
+    Effect.mapError(() => new JsonRpcError({ code: -32602, message: "Invalid parameters" })),
+  );
+
 const dispatch = Effect.fn("Mcp.dispatch")(function* (method: string, params: unknown) {
+  yield* Effect.annotateCurrentSpan("mcp.method", method);
   switch (method) {
     case "initialize":
-      yield* Effect.annotateCurrentSpan("mcp.method", method);
+      return { protocolVersion: "2025-03-26", capabilities, serverInfo, instructions };
+    case "server/discover":
       return {
-        protocolVersion: "2025-03-26",
-        capabilities: { tools: {} },
-        serverInfo: { name: "traces", version: "0.1.0" },
+        ...cached,
+        supportedVersions: ["2026-07-28", "2025-06-18", "2025-03-26"],
+        capabilities,
+        instructions,
+        _meta: { "io.modelcontextprotocol/serverInfo": serverInfo },
       };
+    case "ping":
+      return {};
     case "tools/list":
-      yield* Effect.annotateCurrentSpan("mcp.method", method);
       return { tools };
     case "tools/call":
-      yield* Effect.annotateCurrentSpan("mcp.method", method);
       return yield* callTool(params);
+    case "skills/list":
+      return { ...cached, skills: [yield* skillEntry()] };
+    case "skills/get": {
+      const { uri } = yield* decodeUri(params);
+      if (uri !== skillUri("SKILL.md")) return yield* unknownResource;
+      return { ...cached, skill: yield* skillEntry() };
+    }
+    case "resources/list": {
+      const manifest = yield* skillManifest();
+      return {
+        resources: allSkillFiles.map((file, index) => ({
+          uri: skillUri(file.path),
+          name: `${SKILL_NAME}/${file.path}`,
+          mimeType: file.mimeType,
+          size: manifest[index]?.size,
+          ...(file.path === "SKILL.md"
+            ? { description: "Install turn-end trace upload hooks for this agent." }
+            : {}),
+        })),
+      };
+    }
+    case "resources/templates/list":
+      return { resourceTemplates: [] };
+    case "resources/read": {
+      const { uri } = yield* decodeUri(params);
+      const file = fileAtUri(uri);
+      if (!file) return yield* unknownResource;
+      return { ...cached, contents: [{ uri, mimeType: file.mimeType, text: file.text }] };
+    }
+    case "resources/directory/read": {
+      const { uri } = yield* decodeUri(params);
+      const children = directoryAtUri(uri);
+      if (!children) return yield* unknownResource;
+      return { ...cached, resources: children };
+    }
     default:
       return yield* new JsonRpcError({ code: -32601, message: "Unknown method" });
   }
@@ -204,6 +375,9 @@ const mcp = Effect.gen(function* () {
     Effect.catchTags({
       JsonRpcError: (error) => Effect.succeed(failure(error.code, error.message)),
       InvalidSearchQuery: () => Effect.succeed(failure(-32602, "Invalid query")),
+      InvalidUploaderInput: () => Effect.succeed(failure(-32602, "Invalid uploader parameters")),
+      IngestStoreError: (error) =>
+        logIngestStoreFailure(error).pipe(Effect.as(failure(-32603, "Ingest storage unavailable"))),
       TraceStoreError: (error) =>
         logStoreFailure(error).pipe(Effect.as(failure(-32603, "Trace storage unavailable"))),
       TraceIndexError: (error) =>
@@ -212,15 +386,82 @@ const mcp = Effect.gen(function* () {
   );
 });
 
+/** Scheme, host, and port the request was addressed to: the Website when forwarded from it. */
+const requestOrigin = (request: HttpServerRequest.HttpServerRequest) =>
+  URL.parse(request.originalUrl)?.origin ?? `https://${request.headers.host ?? "localhost"}`;
+
+const skillFilesPrefix = `/install/skills/${SKILL_NAME}/`;
+
+// Public, cacheable for a few minutes, and never rendered: scripts are served as plain text.
+const skillFileHeaders = (contentType: string) => ({
+  "content-type": `${contentType}; charset=utf-8`,
+  "cache-control": "public, max-age=300",
+  "x-content-type-options": "nosniff",
+});
+
 export const apiRoutes = Layer.mergeAll(
   HttpRouter.add(
     "GET",
     "/install",
     Effect.gen(function* () {
-      return HttpServerResponse.text(yield* readInstallInstructions(), {
+      const request = yield* HttpServerRequest.HttpServerRequest;
+      return HttpServerResponse.text(yield* readInstallGuide(requestOrigin(request)), {
         headers: { "content-type": "text/markdown; charset=utf-8", "cache-control": "no-store" },
       });
     }),
+  ),
+  HttpRouter.add(
+    "GET",
+    "/install/skills/*",
+    Effect.gen(function* () {
+      const request = yield* HttpServerRequest.HttpServerRequest;
+      const path = new URL(request.url, "http://local").pathname;
+      if (path === `${skillFilesPrefix}manifest.json`)
+        return HttpServerResponse.jsonUnsafe(
+          { skill: yield* skillEntry(), files: yield* skillManifest() },
+          { headers: skillFileHeaders("application/json") },
+        );
+      const file = path.startsWith(skillFilesPrefix)
+        ? fileAtPath(path.slice(skillFilesPrefix.length))
+        : undefined;
+      if (!file) return json({ error: "Not found" }, 404);
+      return HttpServerResponse.text(file.text, {
+        headers: skillFileHeaders(
+          file.mimeType === "text/markdown" ? "text/markdown" : "text/plain",
+        ),
+      });
+    }),
+  ),
+  HttpRouter.add(
+    "POST",
+    "/api/uploaders/claim",
+    Effect.gen(function* () {
+      const request = yield* HttpServerRequest.HttpServerRequest;
+      const claimed = yield* claimUploader(
+        request.json.pipe(Effect.mapError(() => new InvalidClaimCode())),
+      );
+      return json(claimed);
+    }).pipe(Effect.catch(httpFailure)),
+  ),
+  HttpRouter.add(
+    "POST",
+    "/api/ingest",
+    Effect.gen(function* () {
+      const request = yield* HttpServerRequest.HttpServerRequest;
+      // Bound the body before it's buffered and parsed; the uploader sends ~4 MB at most.
+      const length = Number(request.headers["content-length"] ?? Number.NaN);
+      const body: Effect.Effect<unknown, InvalidIngestBatch | TraceEventTooLarge> =
+        Number.isSafeInteger(length) && length <= MAX_BATCH_BYTES
+          ? request.json.pipe(Effect.mapError(() => new InvalidIngestBatch()))
+          : Effect.fail(
+              new TraceEventTooLarge({
+                length: Number.isSafeInteger(length) ? length : -1,
+                limit: MAX_BATCH_BYTES,
+              }),
+            );
+      const result = yield* ingestBatch(request.headers.authorization, body);
+      return json(result);
+    }).pipe(Effect.catch(httpFailure)),
   ),
   HttpRouter.add(
     "GET",

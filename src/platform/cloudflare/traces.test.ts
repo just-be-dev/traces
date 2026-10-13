@@ -5,6 +5,7 @@ import * as Logger from "effect/Logger";
 import * as References from "effect/References";
 import * as Schema from "effect/Schema";
 import { EventId, Identity, Owner, SearchQuery, Trace, TraceStore } from "../../traces.ts";
+import { sqliteD1 } from "./d1.testing.ts";
 import { type D1Statements, identity, storage } from "./traces.ts";
 
 // Stands in for the native D1 binding: every statement resolves or rejects as given,
@@ -25,6 +26,7 @@ const client = (
         };
       },
     }),
+    batch: (statements) => settle(statements.map(() => ({ meta: { changes: 1 } }))),
   };
   return Effect.succeed(d1);
 };
@@ -88,7 +90,7 @@ test("D1 rejections become typed TraceStoreErrors for every operation", async ()
         store.insert(trace).pipe(Effect.flip),
         store.search(owner, query).pipe(Effect.flip),
         store.get(owner, [trace.id]).pipe(Effect.flip),
-        store.unindexed(5).pipe(Effect.flip),
+        store.unindexed(5, 1_000_000).pipe(Effect.flip),
         store.markIndexed(owner, trace.id).pipe(Effect.flip),
       ]);
     }).pipe(Effect.provide(layer)),
@@ -132,15 +134,15 @@ test("the sweep reads unindexed rows newest first and marks one owner's event", 
   await Effect.runPromise(
     Effect.gen(function* () {
       const store = yield* TraceStore;
-      yield* store.unindexed(25);
+      yield* store.unindexed(25, 1_000_000);
       yield* store.markIndexed(owner, trace.id);
     }).pipe(Effect.provide(storage(client({ rows: [] }, queries)))),
   );
-  expect(queries).toEqual([
-    [
-      "SELECT owner, id, source, session_id, event, occurred_at, summary, raw FROM events WHERE indexed_at IS NULL ORDER BY occurred_at DESC, id DESC LIMIT ?",
-      [25],
-    ],
+  expect(queries[0]?.[0]).toContain(
+    "WHERE indexed_at IS NULL ORDER BY occurred_at DESC, id DESC LIMIT ?",
+  );
+  expect(queries[0]?.[1]).toEqual([25, 1_000_000]);
+  expect(queries.slice(1)).toEqual([
     [
       "UPDATE events SET indexed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE owner = ? AND id = ?",
       ["owner", "event-1"],
@@ -165,18 +167,7 @@ test("identity requires an Access context and maps every admitted request to the
 // D1 is SQLite, so the real migrations and adapter queries run against bun:sqlite.
 // This checks SQL and migration syntax, not D1's network or consistency behavior.
 test("migrations apply and every adapter query runs against SQLite", async () => {
-  const { Database: Sqlite } = await import("bun:sqlite");
-  const db = new Sqlite(":memory:");
-  for (const file of ["0001_events.sql", "0002_content_index.sql"])
-    db.exec(await Bun.file(new URL(`../../../migrations/${file}`, import.meta.url)).text());
-  const d1: D1Statements = {
-    prepare: (sql) => ({
-      bind: (...values) => ({
-        run: async () => ({ meta: { changes: db.query(sql).run(...(values as [])).changes } }),
-        all: async () => ({ results: db.query(sql).all(...(values as [])) }),
-      }),
-    }),
-  };
+  const { db, d1 } = await sqliteD1();
   const at = (id: string, time: string, who = owner) =>
     Schema.decodeSync(Trace)({ ...trace, owner: who, id, occurredAt: `2026-10-09T${time}Z` });
   const result = await Effect.runPromise(
@@ -186,13 +177,20 @@ test("migrations apply and every adapter query runs against SQLite", async () =>
       yield* store.insert(at("new", "11:00:00"));
       yield* store.insert(at("theirs", "12:00:00", Owner.make("other")));
       const duplicate = yield* store.insert(at("old", "13:00:00"));
-      const before = yield* store.unindexed(10);
+      // Existing, new, and repeated-in-batch IDs: only the first "batch" row is new.
+      const batched = yield* store.insertMany([
+        at("old", "14:00:00"),
+        at("batch", "09:00:00"),
+        at("batch", "09:30:00"),
+      ]);
+      const before = yield* store.unindexed(10, 1_000_000);
       yield* store.markIndexed(owner, EventId.make("new"));
       yield* store.markIndexed(owner, EventId.make("theirs"));
       return {
         duplicate,
+        batched,
         before: before.map((found) => `${found.owner}/${found.id}`),
-        after: (yield* store.unindexed(10)).map((found) => `${found.owner}/${found.id}`),
+        after: (yield* store.unindexed(10, 1_000_000)).map((found) => `${found.owner}/${found.id}`),
         got: (yield* store.get(
           owner,
           ["theirs", "old", "new"].map((id) => EventId.make(id)),
@@ -202,9 +200,10 @@ test("migrations apply and every adapter query runs against SQLite", async () =>
   );
   expect(result).toEqual({
     duplicate: false,
-    before: ["other/theirs", "owner/new", "owner/old"],
+    batched: 1,
+    before: ["other/theirs", "owner/new", "owner/old", "owner/batch"],
     // Marking "theirs" as this owner touched nothing: the update is owner-scoped.
-    after: ["other/theirs", "owner/old"],
+    after: ["other/theirs", "owner/old", "owner/batch"],
     got: ["old", "new"],
   });
   const plan = db
@@ -213,4 +212,38 @@ test("migrations apply and every adapter query runs against SQLite", async () =>
     )
     .all();
   expect(JSON.stringify(plan)).toContain("events_unindexed");
+});
+
+test("the sweep's read stops at the byte budget but always returns the newest row", async () => {
+  const { d1 } = await sqliteD1();
+  const big = (id: string, time: string, size: number) =>
+    Schema.decodeSync(Trace)({
+      ...trace,
+      id,
+      occurredAt: `2026-10-09T${time}Z`,
+      raw: { text: "x".repeat(size) },
+    });
+  const read = await Effect.runPromise(
+    Effect.gen(function* () {
+      const store = yield* TraceStore;
+      yield* store.insertMany([
+        big("newest", "12:00:00", 600),
+        big("middle", "11:00:00", 300),
+        big("oldest", "10:00:00", 10),
+      ]);
+      const ids = (traces: ReadonlyArray<Trace>) => traces.map((found) => String(found.id));
+      return {
+        tight: ids(yield* store.unindexed(10, 100)),
+        two: ids(yield* store.unindexed(10, 930)),
+        all: ids(yield* store.unindexed(10, 10_000)),
+        limited: ids(yield* store.unindexed(2, 10_000)),
+      };
+    }).pipe(Effect.provide(storage(Effect.succeed(d1)))),
+  );
+  expect(read).toEqual({
+    tight: ["newest"],
+    two: ["newest", "middle"],
+    all: ["newest", "middle", "oldest"],
+    limited: ["newest", "middle"],
+  });
 });

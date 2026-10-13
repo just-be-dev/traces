@@ -71,15 +71,39 @@ const decodeSearchResults = Effect.fn("TraceStore.decodeResults")(function* (
   return traces;
 });
 
-/** The part of the native D1 binding this adapter uses. */
+/** A prepared statement with its values bound. */
+export interface D1Bound {
+  run(): Promise<{ readonly meta: { readonly changes: number } }>;
+  all(): Promise<{ readonly results: ReadonlyArray<unknown> }>;
+}
+
+/** The part of the native D1 binding the D1 adapters use. */
 export interface D1Statements {
   prepare(query: string): {
-    bind(...values: Array<unknown>): {
-      run(): Promise<{ readonly meta: { readonly changes: number } }>;
-      all(): Promise<{ readonly results: ReadonlyArray<unknown> }>;
-    };
+    bind(...values: Array<unknown>): D1Bound;
   };
+  /** Runs the statements in order as one transaction. */
+  batch(
+    statements: Array<D1Bound>,
+  ): Promise<ReadonlyArray<{ readonly meta: { readonly changes: number } }>>;
 }
+
+const INSERT_TRACE =
+  "INSERT OR IGNORE INTO events (owner, id, source, session_id, event, occurred_at, summary, raw) VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
+
+const bindTrace = (d1: D1Statements, trace: Trace) =>
+  d1
+    .prepare(INSERT_TRACE)
+    .bind(
+      trace.owner,
+      trace.id,
+      trace.source,
+      trace.sessionId,
+      trace.event,
+      trace.occurredAt,
+      trace.summary,
+      JSON.stringify(trace.raw),
+    );
 
 /**
  * D1's Effect client turns query failures into defects, so this adapter takes the
@@ -90,25 +114,19 @@ export const storage = (raw: Effect.Effect<D1Statements>) =>
     insert: Effect.fn("TraceStore.insert")(function* (trace) {
       const d1 = yield* raw;
       const result = yield* Effect.tryPromise({
-        try: () =>
-          d1
-            .prepare(
-              "INSERT OR IGNORE INTO events (owner, id, source, session_id, event, occurred_at, summary, raw) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            )
-            .bind(
-              trace.owner,
-              trace.id,
-              trace.source,
-              trace.sessionId,
-              trace.event,
-              trace.occurredAt,
-              trace.summary,
-              JSON.stringify(trace.raw),
-            )
-            .run(),
+        try: () => bindTrace(d1, trace).run(),
         catch: (cause) => new TraceStoreError({ operation: "insert", cause }),
       });
       return result.meta.changes > 0;
+    }),
+    insertMany: Effect.fn("TraceStore.insertMany")(function* (traces: ReadonlyArray<Trace>) {
+      if (traces.length === 0) return 0;
+      const d1 = yield* raw;
+      const results = yield* Effect.tryPromise({
+        try: () => d1.batch(traces.map((trace) => bindTrace(d1, trace))),
+        catch: (cause) => new TraceStoreError({ operation: "insertMany", cause }),
+      });
+      return results.reduce((total, result) => total + result.meta.changes, 0);
     }),
     search: Effect.fn("TraceStore.search")(function* (owner, query) {
       const d1 = yield* raw;
@@ -146,15 +164,31 @@ export const storage = (raw: Effect.Effect<D1Statements>) =>
         return trace ? [trace] : [];
       });
     }),
-    unindexed: Effect.fn("TraceStore.unindexed")(function* (limit: number) {
+    // Picks candidates by the partial index, then trims them to the byte budget with a
+    // running total, so large transcript entries can't exhaust the isolate's memory.
+    unindexed: Effect.fn("TraceStore.unindexed")(function* (limit: number, maxBytes: number) {
       const d1 = yield* raw;
       const result = yield* Effect.tryPromise({
         try: () =>
           d1
             .prepare(
-              `SELECT ${TRACE_COLUMNS} FROM events WHERE indexed_at IS NULL ORDER BY occurred_at DESC, id DESC LIMIT ?`,
+              `WITH candidates AS (
+                 SELECT owner, id, occurred_at, length(CAST(raw AS BLOB)) AS size FROM events
+                 WHERE indexed_at IS NULL ORDER BY occurred_at DESC, id DESC LIMIT ?
+               ), budgeted AS (
+                 SELECT owner, id,
+                   SUM(size) OVER (ORDER BY occurred_at DESC, id DESC ROWS UNBOUNDED PRECEDING) AS running,
+                   ROW_NUMBER() OVER (ORDER BY occurred_at DESC, id DESC) AS n
+                 FROM candidates
+               )
+               SELECT ${TRACE_COLUMNS.split(", ")
+                 .map((column) => `e.${column}`)
+                 .join(", ")}
+               FROM budgeted b JOIN events e ON e.owner = b.owner AND e.id = b.id
+               WHERE b.running <= ? OR b.n = 1
+               ORDER BY e.occurred_at DESC, e.id DESC`,
             )
-            .bind(limit)
+            .bind(limit, maxBytes)
             .all(),
         catch: (cause) => new TraceStoreError({ operation: "unindexed", cause }),
       });

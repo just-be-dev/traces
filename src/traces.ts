@@ -36,8 +36,10 @@ export type SearchQuery = typeof SearchQuery.Type;
 export const MAX_SEARCH_RESULTS = 100;
 export const MAX_CONTENT_RESULTS = 20;
 export const MAX_RAW_LENGTH = 64_000;
-/** Traces the scheduled sweep indexes per run. */
-export const INDEX_BATCH_SIZE = 25;
+/** Traces the scheduled sweep indexes per run, bounded by {@link INDEX_BATCH_BYTES}. */
+export const INDEX_BATCH_SIZE = 100;
+/** Raw JSON the sweep loads per run; transcript entries can be up to 1 MB each. */
+export const INDEX_BATCH_BYTES = 8_000_000;
 
 // Public wire format. Brands are type-level only, so the JSON shape is unchanged.
 export const Submission = Schema.Struct({
@@ -76,7 +78,7 @@ export class InvalidSearchQuery extends Schema.TaggedError<InvalidSearchQuery>()
 ) {}
 
 export class TraceStoreError extends Schema.TaggedError<TraceStoreError>()("TraceStoreError", {
-  operation: Schema.Literals(["insert", "search", "get", "unindexed", "markIndexed"]),
+  operation: Schema.Literals(["insert", "insertMany", "search", "get", "unindexed", "markIndexed"]),
   cause: Schema.Defect(),
 }) {}
 
@@ -95,6 +97,11 @@ export class TraceStore extends Context.Service<
   {
     /** Inserts a trace unless `(owner, id)` already exists; the first payload wins. */
     readonly insert: (trace: Trace) => Effect.Effect<boolean, TraceStoreError>;
+    /**
+     * Inserts each trace unless `(owner, id)` already exists, atomically. Returns how
+     * many were new; repeats within the batch count once.
+     */
+    readonly insertMany: (traces: ReadonlyArray<Trace>) => Effect.Effect<number, TraceStoreError>;
     /** Newest first, at most {@link MAX_SEARCH_RESULTS}: exact session ID or summary substring. */
     readonly search: (
       owner: Owner,
@@ -105,8 +112,15 @@ export class TraceStore extends Context.Service<
       owner: Owner,
       ids: ReadonlyArray<EventId>,
     ) => Effect.Effect<ReadonlyArray<Trace>, TraceStoreError>;
-    /** Stored traces the content index hasn't confirmed, newest first, across all owners. */
-    readonly unindexed: (limit: number) => Effect.Effect<ReadonlyArray<Trace>, TraceStoreError>;
+    /**
+     * Stored traces the content index hasn't confirmed, newest first, across all owners:
+     * at most `limit`, and only while their raw JSON totals at most `maxBytes`, except
+     * that the newest one is always returned.
+     */
+    readonly unindexed: (
+      limit: number,
+      maxBytes: number,
+    ) => Effect.Effect<ReadonlyArray<Trace>, TraceStoreError>;
     /** Records that the content index holds this trace. Repeating it is harmless. */
     readonly markIndexed: (owner: Owner, id: EventId) => Effect.Effect<void, TraceStoreError>;
   }
@@ -122,6 +136,17 @@ export class TraceStore extends Context.Service<
           if (events.has(key)) return false;
           events.set(key, trace);
           return true;
+        }),
+      insertMany: (traces) =>
+        Effect.sync(() => {
+          let inserted = 0;
+          for (const trace of traces) {
+            const key = traceKey(trace.owner, trace.id);
+            if (events.has(key)) continue;
+            events.set(key, trace);
+            inserted++;
+          }
+          return inserted;
         }),
       search: (owner, query) =>
         Effect.sync(() => {
@@ -144,14 +169,19 @@ export class TraceStore extends Context.Service<
             return trace ? [trace] : [];
           }),
         ),
-      unindexed: (limit) =>
-        Effect.sync(() =>
-          [...events.entries()]
+      unindexed: (limit, maxBytes) =>
+        Effect.sync(() => {
+          const pending = [...events.entries()]
             .filter(([key]) => !indexed.has(key))
             .map(([, trace]) => trace)
             .sort(newestFirst)
-            .slice(0, limit),
-        ),
+            .slice(0, limit);
+          let running = 0;
+          return pending.filter((trace, index) => {
+            running += new TextEncoder().encode(JSON.stringify(trace.raw)).length;
+            return index === 0 || running <= maxBytes;
+          });
+        }),
       markIndexed: (owner, id) =>
         Effect.sync(() => {
           const key = traceKey(owner, id);
@@ -355,7 +385,7 @@ export const searchTraceContents = Effect.fn("Traces.searchContents")(function* 
  */
 export const indexPendingTraces = Effect.fn("Traces.indexPending")(function* () {
   const store = yield* TraceStore;
-  const pending = yield* store.unindexed(INDEX_BATCH_SIZE);
+  const pending = yield* store.unindexed(INDEX_BATCH_SIZE, INDEX_BATCH_BYTES);
   const outcomes = yield* Effect.forEach(
     pending,
     (trace) =>
@@ -363,7 +393,7 @@ export const indexPendingTraces = Effect.fn("Traces.indexPending")(function* () 
         Effect.as(true),
         Effect.catch((error) => logIndexFailure(error).pipe(Effect.as(false))),
       ),
-    { concurrency: 4 },
+    { concurrency: 8 },
   );
   const indexed = outcomes.filter(Boolean).length;
   const failed = outcomes.length - indexed;

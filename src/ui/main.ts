@@ -95,19 +95,19 @@ export const view = (model: Model, h: HtmlBuilder<Message>): Document => ({
               h.p(
                 [h.Class("mt-3 text-muted-foreground")],
                 [
-                  "Configure a Cloudflare Access identity for MCP; use a separately provisioned service token for noninteractive hooks. Run the inspect_hooks tool before editing local agent settings.",
+                  "Point your coding agent at /install. It connects the traces MCP server with your Cloudflare Access login, then follows the install-traces skill to add a turn-end upload hook and backfill past sessions.",
                 ],
               ),
               h.p(
                 [h.Class("mt-3 font-mono text-sm")],
-                ["Pi · Claude Code · Codex / Amp: MCP only"],
+                ["Claude Code · Codex · pi / Amp: MCP search only"],
               ),
             ],
           )
         : h.empty,
       h.p(
         [h.Class("text-sm text-muted-foreground")],
-        ["Local prototype · No agent hooks are installed automatically."],
+        ["Local prototype · Hooks are installed only after you approve them in your agent."],
       ),
     ],
   ),

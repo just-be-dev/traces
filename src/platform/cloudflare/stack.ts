@@ -3,12 +3,15 @@ import * as Cloudflare from "alchemy/Cloudflare";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import Api, { observability } from "./api.ts";
+import { websiteDomain, websiteRoutes } from "./domain.ts";
 
 export const App = Cloudflare.Website.Foldkit("App", {
   main: "src/platform/cloudflare/edge.ts",
   env: { API: Api },
-  assets: { runWorkerFirst: ["/api/*", "/mcp", "/install"] },
+  assets: { runWorkerFirst: ["/api/*", "/mcp", "/install", "/install/*"] },
   compatibility: { date: "2026-10-04" },
+  domain: websiteDomain,
+  routes: websiteRoutes,
   // The edge is a plain forwarding Worker, so Cloudflare's automatic tracing covers it.
   observability,
 });

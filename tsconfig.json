@@ -24,6 +24,7 @@
               "src/ui/**/command.ts",
               "src/api.ts",
               "src/api.test.ts",
+              "src/install/e2e.test.ts",
               "src/platform/cloudflare/api.ts"
             ],
             "options": { "allowedUnstableApis": ["effect/http"] }

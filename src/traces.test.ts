@@ -86,6 +86,7 @@ test("operations authorize before reading the body or touching storage", async (
     Layer.succeed(Identity, { owner: Effect.fail(new Unauthenticated()) }),
     Layer.succeed(TraceStore, {
       insert: () => Effect.die("unexpected write"),
+      insertMany: () => Effect.die("unexpected write"),
       search: () => Effect.die("unexpected read"),
       get: () => Effect.die("unexpected read"),
       unindexed: () => Effect.die("unexpected read"),
@@ -222,7 +223,7 @@ test("submission indexes new traces so content search finds payload text, scoped
         substring: yield* search("ROUTER"),
         allTerms: yield* search("router pattern"),
         replaced: yield* search("replacement"),
-        pending: yield* (yield* TraceStore).unindexed(10),
+        pending: yield* (yield* TraceStore).unindexed(10, 1_000_000),
         invalid: yield* searchTraceContents("x".repeat(201)).pipe(
           Effect.flip,
           Effect.provide(signedInAs(owner)),
@@ -282,29 +283,28 @@ test("an index outage never fails a stored submission, and the sweep catches up"
 test("the sweep backfills newest first in batches and one failure doesn't stop the rest", async () => {
   const index = flakyIndex();
   const logs = captureLogs();
-  index.state.failing.add("event-03");
+  index.state.failing.add("event-003");
   const total = INDEX_BATCH_SIZE + 5;
   const runs = await Effect.runPromise(
     Effect.gen(function* () {
       const store = yield* TraceStore;
       // Stored before content search existed: in D1 but never indexed.
       for (let n = 0; n < total; n++) {
-        const id = `event-${String(n).padStart(2, "0")}`;
-        yield* store.insert(
-          trace(id, { n }, { occurredAt: `2026-10-09T12:00:${String(n).padStart(2, "0")}Z` }),
-        );
+        const id = `event-${String(n).padStart(3, "0")}`;
+        const time = new Date(Date.UTC(2026, 9, 9, 12, 0, n)).toISOString();
+        yield* store.insert(trace(id, { n }, { occurredAt: time }));
       }
       const first = yield* indexPendingTraces();
       const second = yield* indexPendingTraces();
-      return { first, second, left: ids(yield* store.unindexed(10)) };
+      return { first, second, left: ids(yield* store.unindexed(10, 1_000_000)) };
     }).pipe(Effect.provide(Layer.mergeAll(TraceStore.memory, index.layer, logs.layer))),
   );
   expect(runs.first).toEqual({ indexed: INDEX_BATCH_SIZE, failed: 0 });
   expect(index.state.uploads.slice(0, 2)).toEqual([`event-${total - 1}`, `event-${total - 2}`]);
   expect(runs.second).toEqual({ indexed: 4, failed: 1 });
-  expect(runs.left).toEqual(["event-03"]);
+  expect(runs.left).toEqual(["event-003"]);
   expect(logs.logs).toHaveLength(1);
-  expect(JSON.stringify([logs.logs, logs.rendered])).not.toContain("event-03");
+  expect(JSON.stringify([logs.logs, logs.rendered])).not.toContain("event-003");
 });
 
 test("content search reads hits back through the owner's store scope, in rank order", async () => {

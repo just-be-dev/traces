@@ -34,6 +34,8 @@ run = "bun run build"
 run = "bun run dev"
 
 [tasks.deploy]
+description = "Deploy the prod stage to traces.just-be.dev (needs explicit approval)"
+env = { TRACES_ACCESS_EMAIL = "cf@just-be.dev", TRACES_DOMAIN = "traces.just-be.dev" }
 run = "bun run deploy --stage prod"
 
 [tasks.prepare]
