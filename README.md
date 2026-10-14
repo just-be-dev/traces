@@ -1,6 +1,6 @@
 # Traces
 
-Agent trace collection and search on Cloudflare, built with Effect 4, Alchemy v2, Foldkit and Bun. This is an **initial local prototype**, not a deployed service.
+Agent trace collection and search on Cloudflare, built with Effect 4, Alchemy v2, Foldkit and Bun. This is a single-tenant **prototype**, deployed at https://traces.just-be.dev.
 
 ```sh
 mise trust && mise install
