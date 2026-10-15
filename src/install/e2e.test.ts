@@ -5,6 +5,7 @@ import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import * as Layer from "effect/Layer";
 import * as ManagedRuntime from "effect/ManagedRuntime";
+import * as Option from "effect/Option";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync, appendFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -23,7 +24,10 @@ const SCRIPT = join(import.meta.dir, "skill/install-traces/scripts/traces.ts");
 const runtime = ManagedRuntime.make(
   Layer.mergeAll(
     AppInfo.layer("Traces"),
-    Layer.succeed(InstallAddress, { apiUrl: Effect.succeed("https://api.example.test") }),
+    Layer.succeed(InstallAddress, {
+      apiUrl: Effect.succeed("https://api.example.test"),
+      publicOrigin: Option.none(),
+    }),
     Layer.succeed(Identity, { owner: Effect.succeed(Owner.make("owner")) }),
     TraceStore.memory,
     TraceIndex.memory,

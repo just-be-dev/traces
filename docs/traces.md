@@ -26,6 +26,14 @@ Production serves everything from `https://traces.just-be.dev`. The `mise run de
 
 Both workers.dev URLs stay enabled. Without `TRACES_DOMAIN` (as in `alchemy dev`), neither Worker gets routes or domains.
 
+## Personal site mount
+
+The landing page also appears at `https://just-be.dev/traces`. The personal site ([just-be-dev/just-be.dev](https://github.com/just-be-dev/just-be.dev)) runs a microfrontend router (`services/router` there) that owns `just-be.dev/*`. It forwards `/traces/*` to the prod Website Worker over a service binding, with the mount stripped. Both sites still deploy separately, and the router names the Website by its Alchemy-generated Worker name.
+
+The router prefixes root-relative URLs in the Website's HTML, CSS, redirects, and cookies, and sets `x-forwarded-prefix: /traces`. It also injects the personal site's header at the top of `<body>`. The header is a declarative shadow root with an external same-origin script, so it fits the CSP in `public/_headers`. It uses the bold IBM Plex Mono weight that `src/ui/entry.ts` loads, and its skip link targets the landing page's `#main-content`.
+
+Through the mount, the Website has no Access identity, the same as on `traces.just-be.dev`. Private routes still fail closed. The uploader only talks to an origin's root, so `/install` requests that carry `x-forwarded-prefix` get the public origin (`TRACES_DOMAIN`) as `ORIGIN` rather than `https://just-be.dev`. MCP stays at `https://traces.just-be.dev/mcp`. Client code in `src/ui/` must not build root-relative URLs at runtime, because the router only rewrites markup and stylesheets.
+
 ## Install flow
 
 Point an agent at public `GET /install` on the Website. The page is Markdown and embeds the Website origin, the MCP URL, and a SHA-256 table of the skill files. It tells the agent to:

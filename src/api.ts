@@ -390,6 +390,10 @@ const mcp = Effect.gen(function* () {
 const requestOrigin = (request: HttpServerRequest.HttpServerRequest) =>
   URL.parse(request.originalUrl)?.origin ?? `https://${request.headers.host ?? "localhost"}`;
 
+/** A path-mounting router, such as just-be.dev's `/traces`, names its mount in this header. */
+const isMounted = (request: HttpServerRequest.HttpServerRequest) =>
+  request.headers["x-forwarded-prefix"] !== undefined;
+
 const skillFilesPrefix = `/install/skills/${SKILL_NAME}/`;
 
 // Public, cacheable for a few minutes, and never rendered: scripts are served as plain text.
@@ -405,9 +409,12 @@ export const apiRoutes = Layer.mergeAll(
     "/install",
     Effect.gen(function* () {
       const request = yield* HttpServerRequest.HttpServerRequest;
-      return HttpServerResponse.text(yield* readInstallGuide(requestOrigin(request)), {
-        headers: { "content-type": "text/markdown; charset=utf-8", "cache-control": "no-store" },
-      });
+      return HttpServerResponse.text(
+        yield* readInstallGuide({ origin: requestOrigin(request), mounted: isMounted(request) }),
+        {
+          headers: { "content-type": "text/markdown; charset=utf-8", "cache-control": "no-store" },
+        },
+      );
     }),
   ),
   HttpRouter.add(

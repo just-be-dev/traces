@@ -32,7 +32,13 @@ export const update = (model: Model, message: Message) =>
 export const view = (model: Model, h: HtmlBuilder<Message>): Document => ({
   title: "Traces · agent event collection",
   body: h.main(
-    [h.Class("mx-auto flex min-h-screen max-w-4xl flex-col justify-center gap-10 px-6 py-16")],
+    [
+      h.Id("main-content"),
+      h.Tabindex(-1),
+      h.Class(
+        "mx-auto flex min-h-screen max-w-4xl flex-col justify-center gap-10 px-6 py-16 focus:outline-none",
+      ),
+    ],
     [
       h.header(
         [h.Class("space-y-3")],

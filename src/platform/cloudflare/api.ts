@@ -4,6 +4,7 @@ import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
 import * as HttpRouter from "effect/http/HttpRouter";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import { InstallAddress } from "../../install/guide.ts";
 import { AppInfo } from "../../service.ts";
 import { apiRoutes, traceRequest } from "../../api.ts";
@@ -77,6 +78,7 @@ export default class Api extends Cloudflare.Worker<Api>()(
       identity(context.access.pipe(withRuntime)),
       Layer.succeed(InstallAddress, {
         apiUrl: publicUrl ? Effect.succeed(publicUrl) : url.pipe(withRuntime),
+        publicOrigin: Option.fromNullishOr(publicUrl),
       }),
       AppInfo.layer("Traces"),
     );
