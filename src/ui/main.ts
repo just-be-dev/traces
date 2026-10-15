@@ -1,113 +1,112 @@
 import * as Schema from "effect/Schema";
 import type { Document, HtmlBuilder } from "foldkit/html";
-import { defineMessageUnion } from "foldkit/message";
+import { defineTaggedUnion } from "foldkit/schema";
 import { modifyFields } from "foldkit/struct";
 import type * as Update from "foldkit/update";
-import { button } from "@/components/ui/button";
+import { UsageStats } from "../usage.ts";
+import { cn } from "@/lib/utils";
+import { Metric } from "./domain/activity.ts";
+import { FetchStats } from "./command.ts";
+import { Message } from "./message.ts";
+import { activityView } from "./view/activity.ts";
+
+export { Message } from "./message.ts";
 
 // MODEL
 
-export const Model = Schema.Struct({ details: Schema.Boolean });
+export const StatsState = defineTaggedUnion({
+  Loading: {},
+  Unavailable: {},
+  Loaded: { stats: UsageStats },
+});
+export type StatsState = typeof StatsState.Type;
+
+export const Model = Schema.Struct({
+  metric: Metric,
+  stats: StatsState,
+});
 export type Model = typeof Model.Type;
-
-// MESSAGE
-
-export const Message = defineMessageUnion({ ClickedShowSetup: {}, ClickedHideSetup: {} });
-export type Message = typeof Message.Type;
 
 // INIT
 
-export const init = () => ({ model: Model.make({ details: false }) });
+export const init = () => ({
+  model: Model.make({ metric: "responses", stats: StatsState.Loading() }),
+  commands: [FetchStats()],
+});
 
 // UPDATE
 
 export const update = (model: Model, message: Message) =>
   Message.match<Update.Return<Model, Message>>(message, {
-    ClickedShowSetup: () => ({ model: modifyFields(model, { details: () => true }) }),
-    ClickedHideSetup: () => ({ model: modifyFields(model, { details: () => false }) }),
+    ClickedRetry: () => ({
+      model: modifyFields(model, { stats: () => StatsState.Loading() }),
+      commands: [FetchStats()],
+    }),
+    SelectedMetric: ({ metric }) => ({ model: modifyFields(model, { metric: () => metric }) }),
+    SucceededFetchStats: ({ stats }) => ({
+      model: modifyFields(model, { stats: () => StatsState.Loaded({ stats }) }),
+    }),
+    FailedFetchStats: () => ({
+      model: modifyFields(model, { stats: () => StatsState.Unavailable() }),
+    }),
   });
 
 // VIEW
 
-export const view = (model: Model, h: HtmlBuilder<Message>): Document => ({
-  title: "Traces · agent event collection",
-  body: h.main(
-    [h.Class("mx-auto flex min-h-screen max-w-4xl flex-col justify-center gap-10 px-6 py-16")],
+const SITE_URL = "https://just-be.dev/";
+
+const navLink = (label: string, href: string, isCurrent: boolean, h: HtmlBuilder<Message>) =>
+  h.a(
     [
-      h.header(
-        [h.Class("space-y-3")],
+      h.Href(href),
+      h.Class(
+        cn(
+          "flex shrink-0 items-center px-[1ch] transition-[filter] duration-150 hover:invert focus-visible:invert focus-visible:outline-none",
+          isCurrent ? "bg-background" : "bg-muted",
+        ),
+      ),
+      ...(isCurrent ? [h.AriaCurrent("page")] : []),
+    ],
+    [h.span([h.Class("font-bold underline")], [label.slice(0, 1)]), label.slice(1)],
+  );
+
+/** The top bar from just-be.dev: tabs on the left, the name in the middle. */
+const topBar = (h: HtmlBuilder<Message>) =>
+  h.nav(
+    [
+      h.Class("fixed top-0 right-0 left-0 z-10 flex h-[1lh] items-center bg-muted"),
+      h.AriaLabel("Main navigation"),
+    ],
+    [
+      h.div(
+        [h.Class("flex h-full")],
+        [navLink("home", SITE_URL, false, h), navLink("traces", "/", true, h)],
+      ),
+      h.a(
         [
-          h.p(
-            [h.Class("font-mono text-sm text-muted-foreground")],
-            ["TRACES / AGENT OBSERVABILITY"],
+          h.Href(SITE_URL),
+          h.AriaLabel("justin bennett"),
+          h.Class(
+            "ml-auto flex gap-[1ch] pr-[1ch] hover:invert focus-visible:invert focus-visible:outline-none lg:fixed lg:left-1/2 lg:-translate-x-1/2 lg:pr-0",
           ),
-          h.h1(
-            [h.Class("text-4xl font-semibold tracking-tight")],
-            ["See what your coding agents did."],
-          ),
-          h.p(
-            [h.Class("text-muted-foreground")],
-            [
-              "Collect raw agent events. Search a session or tool through a single remote MCP endpoint. Keep the original payload, even when agents speak different formats.",
-            ],
-          ),
+        ],
+        [
+          h.span([], [h.span([h.Class("font-bold")], ["just"]), "in"]),
+          h.span([], [h.span([h.Class("font-bold")], ["be"]), "nnett"]),
         ],
       ),
-      h.section(
-        [
-          h.Class("rounded-xl border border-border bg-card p-6 shadow-sm"),
-          h.AriaLabel("Trace service status"),
-        ],
-        [
-          h.h2([h.Class("text-lg font-medium")], ["First slice: collect → inspect"]),
-          h.p(
-            [h.Class("mt-2 text-sm text-muted-foreground")],
-            [
-              "Events are stored in D1 with their raw payload and a small searchable projection, and their contents are indexed for full-text search in Cloudflare AI Search. Access gates the remote API; Basin analytics comes later.",
-            ],
-          ),
-          h.p(
-            [h.Class("my-6 font-mono text-sm text-muted-foreground")],
-            ["POST /api/events     GET /api/events?q=…     GET /api/search?q=…     POST /mcp"],
-          ),
-          h.div(
-            [h.Class("flex gap-3")],
-            [
-              model.details
-                ? button(
-                    { onClick: Message.ClickedHideSetup(), type: "button", variant: "outline" },
-                    "Hide setup",
-                    h,
-                  )
-                : button({ onClick: Message.ClickedShowSetup(), type: "button" }, "Show setup", h),
-            ],
-          ),
-        ],
-      ),
-      model.details
-        ? h.section(
-            [
-              h.Class("rounded-xl border border-border bg-card p-6 shadow-sm"),
-              h.AriaLabel("Integration setup"),
-            ],
-            [
-              h.h2([h.Class("text-lg font-medium")], ["Connect an agent"]),
-              h.p(
-                [h.Class("mt-3 text-muted-foreground")],
-                [
-                  "Point your coding agent at /install. It connects the traces MCP server with your Cloudflare Access login, then follows the install-traces skill to add a turn-end upload hook and backfill past sessions.",
-                ],
-              ),
-              h.p(
-                [h.Class("mt-3 font-mono text-sm")],
-                ["Claude Code · Codex · pi / Amp: MCP search only"],
-              ),
-            ],
-          )
-        : h.empty,
-      h.p(
-        [h.Class("text-sm text-muted-foreground")],
-        ["Local prototype · Hooks are installed only after you approve them in your agent."],
+    ],
+  );
+
+export const view = (model: Model, h: HtmlBuilder<Message>): Document => ({
+  title: "~/traces · justin bennett",
+  body: h.div(
+    [h.Class("flex min-h-screen flex-col pt-[1lh] pb-[2lh]")],
+    [
+      topBar(h),
+      h.main(
+        [h.Class("mx-auto mt-[2lh] flex w-full max-w-4xl flex-col gap-[2lh] px-[2ch]")],
+        [h.h1([h.Class("font-bold")], ["~/traces"]), activityView(model.stats, model.metric, h)],
       ),
     ],
   ),

@@ -18,7 +18,15 @@
   --color-ring: var(--primary);
   --color-sidebar: var(--background);
   --color-hover: var(--muted);
-  --font-sans: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
+  --color-subtle: var(--subtle);
+  --color-accent: var(--accent);
+  --color-heat-0: var(--heat-0);
+  --color-heat-1: var(--heat-1);
+  --color-heat-2: var(--heat-2);
+  --color-heat-3: var(--heat-3);
+  --color-heat-4: var(--heat-4);
+  /* just-be.dev is set entirely in IBM Plex Mono. */
+  --font-sans: "IBM Plex Mono", ui-monospace, monospace;
   --font-heading: var(--font-sans);
   --font-mono: "IBM Plex Mono", ui-monospace, monospace;
   --radius-md: calc(var(--radius) * 0.8);
@@ -26,35 +34,35 @@
 }
 
 :root {
-  --radius: 0.625rem;
-  --background: #f8fafc;
-  --foreground: #0f172a;
+  /* Palette from just-be.dev: black on white, #ddd bars, gray secondary text. Light only. */
+  --radius: 0;
+  --background: #fff;
+  --foreground: #000;
   --card: #fff;
-  --primary: #1d4ed8;
+  --primary: #000;
   --primary-foreground: #fff;
   --secondary: var(--muted);
-  --muted: #e2e8f0;
-  --muted-foreground: #475569;
-  --destructive: #dc2626;
-  --border: #cbd5e1;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0f172a;
-    --foreground: #f8fafc;
-    --card: #1e293b;
-    --primary: #93c5fd;
-    --primary-foreground: #0f172a;
-    --muted: #334155;
-    --muted-foreground: #cbd5e1;
-    --destructive: #f87171;
-    --border: #475569;
-  }
+  --muted: #ddd;
+  --muted-foreground: #888;
+  --subtle: #444;
+  --accent: #00a;
+  --destructive: #a00;
+  --border: #000;
+  --heat-0: #eee;
+  --heat-1: #bbb;
+  --heat-2: #888;
+  --heat-3: #444;
+  --heat-4: #000;
 }
 
 @layer base {
+  html {
+    font-size: 16px;
+    line-height: 1.3;
+    font-variant-ligatures: common-ligatures;
+  }
   body {
     @apply bg-background font-sans text-foreground;
+    line-height: inherit;
   }
 }
