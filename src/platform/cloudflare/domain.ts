@@ -17,8 +17,12 @@ const zoneName = publicDomain
   ? process.env.TRACES_ZONE || publicDomain.split(".").slice(-2).join(".")
   : undefined;
 
-/** Paths served by the API Worker directly, behind Access, including OAuth discovery. */
-const accessPaths = ["/mcp*", "/api/events*", "/api/search*", "/.well-known/*"];
+/**
+ * Paths served by the API Worker directly, behind Access, including OAuth discovery.
+ * Any route that reads the owner's data must be listed, or on the public domain it
+ * arrives through the Website without an Access identity and answers 401.
+ */
+export const accessPaths = ["/mcp*", "/api/events*", "/api/search*", "/.well-known/*"];
 
 export const apiRoutes: Array<Cloudflare.WorkerRouteConfig> | undefined =
   publicDomain && zoneName

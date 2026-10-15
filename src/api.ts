@@ -31,6 +31,7 @@ import {
   skillUri,
 } from "./install/skill.ts";
 import { AppInfo } from "./service.ts";
+import { publicUsageStats, type UsageStoreError } from "./usage.ts";
 import {
   authorize,
   InvalidSearchQuery,
@@ -97,9 +98,15 @@ const httpFailure = (
     | TraceIndexError
     | InvalidIngestBatch
     | InvalidClaimCode
-    | IngestStoreError,
+    | IngestStoreError
+    | UsageStoreError,
 ) => {
   switch (error._tag) {
+    case "UsageStoreError":
+      return Effect.logError("Usage storage failed", error.cause).pipe(
+        Effect.annotateLogs({ "traces.operation": error.operation }),
+        Effect.as(json({ error: "Usage stats unavailable" }, 503)),
+      );
     case "Unauthenticated":
       return Effect.succeed(json({ error: "Unauthorized" }, 401));
     case "InvalidTraceEvent":
@@ -499,6 +506,24 @@ export const apiRoutes = Layer.mergeAll(
       const query = new URL(request.url, "http://local").searchParams.get("q") ?? "";
       return json({ events: yield* searchTraceContents(query) });
     }).pipe(Effect.catch(httpFailure)),
+  ),
+  // Public by design: the showcase owner's aggregate usage, served from a snapshot
+  // the cron keeps fresh. Browsers and caches may reuse it briefly.
+  HttpRouter.add(
+    "GET",
+    "/api/stats",
+    publicUsageStats().pipe(
+      Effect.map((snapshot) =>
+        HttpServerResponse.jsonUnsafe(snapshot.stats, {
+          headers: {
+            "cache-control": "public, max-age=60, stale-while-revalidate=300",
+            "last-modified": new Date(snapshot.generatedAt).toUTCString(),
+            "x-content-type-options": "nosniff",
+          },
+        }),
+      ),
+      Effect.catch(httpFailure),
+    ),
   ),
   HttpRouter.add("POST", "/mcp", mcp.pipe(Effect.catch(httpFailure))),
   HttpRouter.add("*", "*", json({ error: "Not found" }, 404)),

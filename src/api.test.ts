@@ -13,6 +13,7 @@ import { apiRoutes, traceRequest } from "./api.ts";
 import { SessionStore, UploaderStore } from "./ingest.ts";
 import { InstallAddress } from "./install/guide.ts";
 import { AppInfo } from "./service.ts";
+import { Showcase, TimeZone, UsageStore, UsageStoreError } from "./usage.ts";
 import {
   Identity,
   Owner,
@@ -35,6 +36,7 @@ const untouchedStore = Layer.succeed(TraceStore, {
   get: () => Effect.die("unexpected read"),
   unindexed: () => Effect.die("unexpected read"),
   markIndexed: () => Effect.die("unexpected write"),
+  tools: () => Effect.die("unexpected read"),
 });
 const storeFailure = (operation: TraceStoreError["operation"]) =>
   Effect.fail(new TraceStoreError({ operation, cause: new Error("D1") }));
@@ -45,6 +47,7 @@ const failingStore = Layer.succeed(TraceStore, {
   get: () => storeFailure("get"),
   unindexed: () => storeFailure("unindexed"),
   markIndexed: () => storeFailure("markIndexed"),
+  tools: () => storeFailure("tools"),
 });
 const untouchedIndex = Layer.succeed(TraceIndex, {
   index: () => Effect.die("unexpected index"),
@@ -64,6 +67,7 @@ const serve = (
   name = "Traces",
   index: Layer.Layer<TraceIndex> = TraceIndex.memory,
   uploaderStore: Layer.Layer<UploaderStore> = UploaderStore.memory,
+  usageStore: Layer.Layer<UsageStore> = UsageStore.memory,
 ) => {
   const spans: Array<Tracer.NativeSpan> = [];
   const tracer = Tracer.make({
@@ -89,6 +93,8 @@ const serve = (
       index,
       uploaderStore,
       SessionStore.memory,
+      usageStore,
+      Layer.succeed(Showcase, { owner: Owner.make("owner"), timeZone: TimeZone.make("UTC") }),
       Logger.layer([capture]),
     ),
   );
@@ -720,5 +726,53 @@ test("ingest rejects malformed and oversized batches without storing anything", 
     });
   } finally {
     await dispose();
+  }
+});
+
+test("usage stats are public, cacheable, and served from the snapshot", async () => {
+  const { handler, dispose } = serve(anonymous, TraceStore.memory);
+  try {
+    const first = await handler(new Request("http://app/api/stats"));
+    expect(first.status).toBe(200);
+    expect(first.headers.get("cache-control")).toBe(
+      "public, max-age=60, stale-while-revalidate=300",
+    );
+    expect(first.headers.get("last-modified")).not.toBeNull();
+    const stats = await body(first);
+    expect(stats).toMatchObject({ days: [], models: [], sources: [], tools: [], sessions: 0 });
+    expect(stats.hours).toHaveLength(24);
+    expect(stats.from).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    // Visitors can't pick the time zone; the query string is ignored.
+    expect(await body(await handler(new Request("http://app/api/stats?offset=600")))).toEqual(
+      stats,
+    );
+    expect((await handler(new Request("http://app/api/signin"))).status).toBe(404);
+  } finally {
+    await dispose();
+  }
+
+  const failing = serve(
+    anonymous,
+    TraceStore.memory,
+    "Traces",
+    undefined,
+    undefined,
+    Layer.succeed(UsageStore, {
+      backlog: () => Effect.die("unexpected read"),
+      record: () => Effect.die("unexpected write"),
+      aggregate: () => Effect.die("unexpected read"),
+      position: Effect.die("unexpected read"),
+      readSnapshot: () =>
+        Effect.fail(new UsageStoreError({ operation: "readSnapshot", cause: new Error("D1") })),
+      writeSnapshot: () => Effect.die("unexpected write"),
+    }),
+  );
+  try {
+    const response = await failing.handler(new Request("http://app/api/stats"));
+    expect(response.status).toBe(503);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(await body(response)).toEqual({ error: "Usage stats unavailable" });
+  } finally {
+    await failing.dispose();
   }
 });

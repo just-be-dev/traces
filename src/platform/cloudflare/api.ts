@@ -8,10 +8,12 @@ import { InstallAddress } from "../../install/guide.ts";
 import { AppInfo } from "../../service.ts";
 import { apiRoutes, traceRequest } from "../../api.ts";
 import { indexPendingTraces } from "../../traces.ts";
+import { recordPendingUsage, refreshUsageStats, Showcase, TimeZone } from "../../usage.ts";
 import { sessions, uploaders } from "./ingest.ts";
 import { apiRoutes as accessRoutes } from "./domain.ts";
 import { ContentSearch, contentIndex } from "./search.ts";
-import { Database, identity, storage } from "./traces.ts";
+import { Database, identity, singleOwner, storage } from "./traces.ts";
+import { usage } from "./usage.ts";
 
 // Prototype volume: keep every request. Lower both rates together once traffic grows.
 const sampling = { headSamplingRate: 1, persist: true } as const;
@@ -67,10 +69,16 @@ export default class Api extends Cloudflare.Worker<Api>()(
     // public domain, MCP is served at https://<domain>/mcp through an API route.
     const domain = yield* Config.String("TRACES_DOMAIN").pipe(Config.withDefault(""));
     const publicUrl = domain ? `https://${domain}` : undefined;
+    // The homepage's days fall in the owner's zone, not each visitor's. An unknown
+    // zone fails the deploy rather than silently showing UTC days.
+    const timeZone = yield* Config.schema(TimeZone, "TRACES_TIMEZONE").pipe(
+      Config.withDefault(TimeZone.make("UTC")),
+    );
     const withRuntime = Effect.provideService(Alchemy.RuntimeContext, runtime);
     const d1 = db.raw.pipe(withRuntime);
     const services = Layer.mergeAll(
       storage(d1),
+      usage(d1),
       uploaders(d1),
       sessions(d1),
       contentIndex(contents.raw.pipe(withRuntime)),
@@ -79,17 +87,33 @@ export default class Api extends Cloudflare.Worker<Api>()(
         apiUrl: publicUrl ? Effect.succeed(publicUrl) : url.pipe(withRuntime),
       }),
       AppInfo.layer("Traces"),
+      Layer.succeed(Showcase, { owner: singleOwner, timeZone }),
     );
-    // Backfills traces stored before content search existed and retries failed uploads.
+    // Two independent sweeps; one failing doesn't stop the other.
+    // The content index sweep backfills traces stored before content search existed
+    // and retries failed uploads. The usage sweep projects LLM usage from new traces.
     yield* Cloudflare.Workers.cron("* * * * *", () =>
-      indexPendingTraces().pipe(
-        Effect.catch((error) =>
-          Effect.logError("Content index sweep failed", error.cause).pipe(
-            Effect.annotateLogs({ "traces.operation": error.operation }),
+      Effect.all(
+        [
+          indexPendingTraces().pipe(
+            Effect.catch((error) =>
+              Effect.logError("Content index sweep failed", error.cause).pipe(
+                Effect.annotateLogs({ "traces.operation": error.operation }),
+              ),
+            ),
           ),
-        ),
-        Effect.provide(services),
-      ),
+          // Refreshing right after the sweep picks up what it just recorded.
+          recordPendingUsage().pipe(
+            Effect.andThen(refreshUsageStats()),
+            Effect.catch((error) =>
+              Effect.logError("Usage sweep or stats refresh failed", error.cause).pipe(
+                Effect.annotateLogs({ "traces.operation": error.operation }),
+              ),
+            ),
+          ),
+        ],
+        { concurrency: "unbounded", discard: true },
+      ).pipe(Effect.provide(services)),
     );
     const handler = yield* HttpRouter.toHttpEffect(apiRoutes);
     return {

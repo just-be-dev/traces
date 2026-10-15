@@ -12,6 +12,7 @@ import { apiRoutes } from "../api.ts";
 import { SessionStore, UploaderStore } from "../ingest.ts";
 import { AppInfo } from "../service.ts";
 import { Identity, Owner, TraceIndex, TraceStore } from "../traces.ts";
+import { Showcase, TimeZone, UsageStore } from "../usage.ts";
 import { InstallAddress } from "./guide.ts";
 
 // Both sides of the ingest boundary: the uploader CLI the skill ships, run as a
@@ -29,6 +30,8 @@ const runtime = ManagedRuntime.make(
     TraceIndex.memory,
     UploaderStore.memory,
     SessionStore.memory,
+    UsageStore.memory,
+    Layer.succeed(Showcase, { owner: Owner.make("owner"), timeZone: TimeZone.make("UTC") }),
   ),
 );
 const handle = (request: Request) =>
