@@ -32,14 +32,15 @@ test("loaded stats show the activity map, totals, and breakdowns", () => {
   );
 });
 
-test("the homepage shows a placeholder while loading, with no sign-in", () => {
+test("the homepage shows a placeholder while loading, with no sign-in or site header", () => {
   scene(
     { update, view },
     given(init().model),
     expect(text("Loading activity…")).toBeVisible(),
     expect(role("link", { name: /sign in/i })).toBeAbsent(),
     expect(role("heading", { level: 1, name: "~/traces" })).toBeVisible(),
-    expect(role("link", { name: "justin bennett" })).toHaveAttr("href", "https://just-be.dev/"),
+    expect(role("navigation")).toBeAbsent(),
+    expect(role("main")).toHaveAttr("id", "main-content"),
     expect(text("Connect an agent")).toBeAbsent(),
   );
 });
