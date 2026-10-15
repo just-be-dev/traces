@@ -1,21 +1,40 @@
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import { type ManifestEntry, SKILL_NAME, skillManifest, skillUri } from "./skill.ts";
 
 export class InstallAddress extends Context.Service<
   InstallAddress,
-  { readonly apiUrl: Effect.Effect<string> }
+  {
+    readonly apiUrl: Effect.Effect<string>;
+    /** The public hostname's origin, e.g. `https://traces.just-be.dev`, when one is configured. */
+    readonly publicOrigin: Option.Option<string>;
+  }
 >()("traces/InstallAddress") {}
 
+/** Where an `/install` request arrived. */
+export interface InstallRequest {
+  /** Scheme, host, and port the request was addressed to. */
+  readonly origin: string;
+  /**
+   * The request came through a router that mounts the Website under a path, such as
+   * `https://just-be.dev/traces`. The uploader only talks to an origin's root, so
+   * the guide points those agents at the public origin instead.
+   */
+  readonly mounted: boolean;
+}
+
 /**
- * The public `/install` page. `origin` is where the page was requested from: the
+ * The public `/install` page. `ORIGIN` is where the page was requested from: the
  * Website, which forwards `/install` and `/api/*` to the API Worker without Access.
  * Downloads and uploads go there; the MCP endpoint is on the API Worker behind Access.
  */
-export const readInstallGuide = Effect.fn("Install.read")(function* (origin: string) {
+export const readInstallGuide = Effect.fn("Install.read")(function* (request: InstallRequest) {
   const address = yield* InstallAddress;
   return installGuide({
-    origin,
+    origin: request.mounted
+      ? Option.getOrElse(address.publicOrigin, () => request.origin)
+      : request.origin,
     apiUrl: yield* address.apiUrl,
     manifest: yield* skillManifest(),
   });

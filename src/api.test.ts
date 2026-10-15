@@ -26,6 +26,7 @@ import {
 
 const installAddress = Layer.succeed(InstallAddress, {
   apiUrl: Effect.succeed("https://api.example.test"),
+  publicOrigin: Option.some("https://traces.example.test"),
 });
 const signedIn = Layer.succeed(Identity, { owner: Effect.succeed(Owner.make("owner")) });
 const anonymous = Layer.succeed(Identity, { owner: Effect.fail(new Unauthenticated()) });
@@ -155,6 +156,20 @@ test("health reads the supplied capability and unknown routes return JSON errors
     );
     expect(instructions).toContain("skill://install-traces/SKILL.md");
     expect(instructions).not.toContain("https://public.example.test/mcp");
+    // Through a path mount (just-be.dev/traces), the origin's root isn't the Website,
+    // so the guide sends agents to the public origin instead.
+    const mounted = await (
+      await handler(
+        new Request("https://site.example.test/install", {
+          headers: { "x-forwarded-prefix": "/traces" },
+        }),
+      )
+    ).text();
+    expect(mounted).toContain("`ORIGIN` = `https://traces.example.test`");
+    expect(mounted).toContain(
+      "https://traces.example.test/install/skills/install-traces/scripts/traces.ts",
+    );
+    expect(mounted).not.toContain("site.example.test");
   } finally {
     await dispose();
   }

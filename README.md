@@ -1,6 +1,6 @@
 # Traces
 
-Agent trace collection and search on Cloudflare, built with Effect 4, Alchemy v2, Foldkit and Bun. This is a single-tenant **prototype**, deployed at https://traces.just-be.dev.
+Agent trace collection and search on Cloudflare, built with Effect 4, Alchemy v2, Foldkit and Bun. This is a single-tenant **prototype**, deployed at https://traces.just-be.dev. The landing page is also mounted at https://just-be.dev/traces, under the personal site's header (see [Personal site mount](docs/traces.md#personal-site-mount)).
 
 ```sh
 mise trust && mise install

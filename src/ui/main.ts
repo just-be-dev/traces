@@ -105,7 +105,13 @@ export const view = (model: Model, h: HtmlBuilder<Message>): Document => ({
     [
       topBar(h),
       h.main(
-        [h.Class("mx-auto mt-[2lh] flex w-full max-w-4xl flex-col gap-[2lh] px-[2ch]")],
+        [
+          h.Id("main-content"),
+          h.Tabindex(-1),
+          h.Class(
+            "mx-auto mt-[2lh] flex w-full max-w-4xl flex-col gap-[2lh] px-[2ch] focus:outline-none",
+          ),
+        ],
         [h.h1([h.Class("font-bold")], ["~/traces"]), activityView(model.stats, model.metric, h)],
       ),
     ],
