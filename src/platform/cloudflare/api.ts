@@ -26,6 +26,23 @@ export const observability = {
   traces: { enabled: true, ...sampling },
 };
 
+/**
+ * Non-local redirect URIs that dynamically registered MCP clients may use. Local
+ * clients (Claude Code, Codex, pi, local Executor) call back on localhost or
+ * loopback and need no entry. Hosted clients must be listed exactly, or Access
+ * rejects sign-in with "Redirect URI not allowed by application configuration".
+ * Add more, e.g. a self-hosted Executor's `<origin>/oauth/callback`, with
+ * comma-separated `TRACES_OAUTH_REDIRECT_URIS`.
+ */
+const oauthRedirectUris = [
+  // Hosted Executor (https://executor.sh) mounts its API, and the callback, under /api.
+  "https://executor.sh/api/oauth/callback",
+  ...(process.env.TRACES_OAUTH_REDIRECT_URIS ?? "")
+    .split(",")
+    .map((uri) => uri.trim())
+    .filter((uri) => uri !== ""),
+];
+
 const Access = Cloudflare.Access.Application("TracesAccess", {
   type: "self_hosted",
   policies: [
@@ -43,6 +60,7 @@ const Access = Cloudflare.Access.Application("TracesAccess", {
     enabled: true,
     dynamicClientRegistration: {
       enabled: true,
+      allowedUris: oauthRedirectUris,
       allowAnyOnLocalhost: true,
       allowAnyOnLoopback: true,
     },
