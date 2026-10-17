@@ -23,7 +23,7 @@ index b1bc75578fb3ebb131c778676805d4abedf35815..b5ba5bcccb447c735fa5de37aeed7d83
       * Source-specific indexing parameters (R2 prefix / include / exclude
       * filters, web-crawler crawl and parse options).
 diff --git a/lib/Cloudflare/AI/SearchInstance.js b/lib/Cloudflare/AI/SearchInstance.js
-index 85aa4bb6cbc28add5accb224f4039e29c69a7ed2..6eb498f37b5c8ea9d5f3cad7dbc38a83be96d8a2 100644
+index 7675a30aade7ab5e2a8f95eca6a12be66ca05bb4..240dc4b037a12045da1657371d08924620e8a2ae 100644
 --- a/lib/Cloudflare/AI/SearchInstance.js
 +++ b/lib/Cloudflare/AI/SearchInstance.js
 @@ -335,8 +335,9 @@ export const SearchInstanceProvider = () => Provider.succeed(SearchInstance, {
@@ -49,7 +49,7 @@ index 85aa4bb6cbc28add5accb224f4039e29c69a7ed2..6eb498f37b5c8ea9d5f3cad7dbc38a83
      tokenId: normalize(instance.tokenId),
      aiGatewayId: normalize(instance.aiGatewayId),
 diff --git a/src/Cloudflare/AI/SearchInstance.ts b/src/Cloudflare/AI/SearchInstance.ts
-index 1c554c19084af369584417c4f94dc8450ddad328..815bff762b25225404ccaa08149fd3febc084935 100644
+index 1464df40339cdbe49dfb0acfc8cbe880be03c88f..1ec51e07b76d19a8473cff8dc8cf93557c94600a 100644
 --- a/src/Cloudflare/AI/SearchInstance.ts
 +++ b/src/Cloudflare/AI/SearchInstance.ts
 @@ -15,7 +15,8 @@ type TypeId = typeof TypeId;

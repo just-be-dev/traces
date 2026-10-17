@@ -6,7 +6,7 @@ Every patch needs an entry here. Inside the patched code, mark the change with a
 
 ## Foldkit DevTools MCP reconnect loop under `alchemy dev`
 
-Patches `@foldkit/vite-plugin@0.26.0` and `@foldkit/devtools-mcp@0.24.0`.
+Patches `@foldkit/vite-plugin@0.27.1` and `@foldkit/devtools-mcp@0.24.1`.
 
 **Symptom.** Under `alchemy dev`, every agent session's Foldkit DevTools MCP server connected to the relay and disconnected many times per second. The MCP tools were unusable, and the dev server log filled with `MCP client connected` and `MCP client disconnected` lines.
 
@@ -29,7 +29,7 @@ The backoff patch is worth keeping until Foldkit has its own backoff. It stops t
 
 ## Alchemy AI Search built-in storage
 
-Patches `alchemy@2.0.0-beta.81` (`src/`, `lib/*.js` and `lib/*.d.ts` of `Cloudflare/AI/SearchInstance`, because Bun loads `src` while types and Node load `lib`).
+Patches `alchemy@2.0.0-beta.83` (`src/`, `lib/*.js` and `lib/*.d.ts` of `Cloudflare/AI/SearchInstance`, because Bun loads `src` while types and Node load `lib`).
 
 **Symptom.** `Cloudflare.AI.SearchInstance` could only declare R2 or web-crawler instances. Traces needs a built-in-storage instance that the Worker fills through the Items binding (`items.upload`), so new events are searchable right away instead of after an R2 sync.
 

@@ -24,7 +24,7 @@ Effect 4 is a stable release; older guides that call it a pre-release are out of
 
 - `mise.toml`: pins Bun, turns on experimental settings and pinning, adds `node_modules/.bin` to PATH, and installs the dependencies locked in `bun.lock` after tools install, so `mise install` is the only setup step. Each package script has a matching mise task, and `mise tasks` lists them all. Change tool versions with `mise use bun@<version>`.
 - `bunfig.toml`: limits test discovery to `./src`.
-- `package.json`: ESM, `private: true`, scripts, exact pins, the workerd override, and Bun patch mappings.
+- `package.json`: ESM, `private: true`, scripts, exact pins, the workerd override, an `effect` override that keeps one Effect copy when a dependency pins an older patch release (`@mpsuesser/oxlint-plugin-effect` pins `effect@4.0.0`), and Bun patch mappings. Drop the `effect` override once every dependency accepts the root version.
 - `tsconfig.json`: strict mode, `noUncheckedIndexedAccess`, bundler resolution, preserved modules, `verbatimModuleSyntax`, and the Effect language-service plugin. Browser, Worker, and Bun types are all loaded; the boundary test keeps native globals out of backend domains.
 - Language-service overrides allow the unstable `effect/http` module only in HTTP, UI command, and platform API files. `effect-oxlint` is allowed as a duplicate Effect consumer. Add narrow per-file exceptions for other unstable APIs as you use them.
 - `vite.config.ts`: the `foldkit()` and Tailwind plugins, UI entry optimization, the `@/` alias, Effect/Foldkit deduplication, and a watch exclusion for `.alchemy/`. Alchemy adds its Cloudflare integration on top for dev and deploy. `mise run build` checks the UI bundle locally.

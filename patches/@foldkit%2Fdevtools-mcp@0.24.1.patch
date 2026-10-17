@@ -1,5 +1,5 @@
 diff --git a/dist/webSocketClient.js b/dist/webSocketClient.js
-index 5a4ceb26f220f96735d8554a60f13cada0fbbb43..8501f0e92e7e518b033ffee2f37a48ad70642c97 100644
+index 5a4ceb26f220f96735d8554a60f13cada0fbbb43..e3f03bb910564d8921187e5153c80930571dca16 100644
 --- a/dist/webSocketClient.js
 +++ b/dist/webSocketClient.js
 @@ -1,9 +1,14 @@
