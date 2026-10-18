@@ -79,15 +79,7 @@ export class InvalidSearchQuery extends Schema.TaggedError<InvalidSearchQuery>()
 ) {}
 
 export class TraceStoreError extends Schema.TaggedError<TraceStoreError>()("TraceStoreError", {
-  operation: Schema.Literals([
-    "insert",
-    "insertMany",
-    "search",
-    "get",
-    "unindexed",
-    "markIndexed",
-    "tools",
-  ]),
+  operation: Schema.Literals(["insert", "insertMany", "search", "get", "unindexed", "markIndexed"]),
   cause: Schema.Defect(),
 }) {}
 
@@ -97,47 +89,6 @@ export class TraceIndexError extends Schema.TaggedError<TraceIndexError>()("Trac
 }) {}
 
 const traceKey = (owner: Owner, id: EventId) => JSON.stringify([owner, id]);
-
-/**
- * Transcript events whose search projection names the tools they call. Tool results
- * and hook events are left out, so a call made with hooks and a transcript installed
- * counts once.
- */
-export const TOOL_CALL_EVENTS = ["assistant", "message/assistant", "response_item/function_call"];
-
-/** Whether an event's summary lists tool names rather than repeating the event name. */
-export const isToolCall = (event: string, summary: string) =>
-  TOOL_CALL_EVENTS.includes(event) && summary !== event;
-
-/**
- * Splits summaries (`Read, Grep`) into tool counts: most calls first, then by name.
- * Harnesses name the same tool differently (`Bash`, `bash`), so names are merged
- * case-insensitively under their most frequent spelling. Used by both stores, so
- * they rank the same way.
- */
-export const rankTools = (
-  summaries: ReadonlyArray<{ readonly summary: string; readonly count: number }>,
-  limit: number,
-) => {
-  const spellings = new Map<string, Map<string, number>>();
-  for (const { summary, count } of summaries)
-    for (const tool of summary.split(", ")) {
-      if (tool.length === 0) continue;
-      const forms = spellings.get(tool.toLowerCase()) ?? new Map<string, number>();
-      forms.set(tool, (forms.get(tool) ?? 0) + count);
-      spellings.set(tool.toLowerCase(), forms);
-    }
-  return [...spellings.values()]
-    .map((forms) => {
-      const ranked = [...forms.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
-      return {
-        tool: ranked[0]?.[0] ?? "",
-        calls: ranked.reduce((sum, [, calls]) => sum + calls, 0),
-      };
-    })
-    .sort((a, b) => b.calls - a.calls || a.tool.localeCompare(b.tool))
-    .slice(0, limit);
-};
 
 const newestFirst = (a: Trace, b: Trace) =>
   b.occurredAt.localeCompare(a.occurredAt) || b.id.localeCompare(a.id);
@@ -173,19 +124,6 @@ export class TraceStore extends Context.Service<
     ) => Effect.Effect<ReadonlyArray<Trace>, TraceStoreError>;
     /** Records that the content index holds this trace. Repeating it is harmless. */
     readonly markIndexed: (owner: Owner, id: EventId) => Effect.Effect<void, TraceStoreError>;
-    /**
-     * Tool calls in the owner's transcripts since `since` (an ISO instant), counted
-     * from the search projection of {@link TOOL_CALL_EVENTS}: most calls first, then by
-     * name, at most `limit`.
-     */
-    readonly tools: (
-      owner: Owner,
-      since: string,
-      limit: number,
-    ) => Effect.Effect<
-      ReadonlyArray<{ readonly tool: string; readonly calls: number }>,
-      TraceStoreError
-    >;
   }
 >()("traces/TraceStore") {
   /** In-memory adapter for application tests. Mirrors D1's ordering and case-insensitive LIKE. */
@@ -250,20 +188,6 @@ export class TraceStore extends Context.Service<
           const key = traceKey(owner, id);
           if (events.has(key)) indexed.add(key);
         }),
-      tools: (owner, since, limit) =>
-        Effect.sync(() =>
-          rankTools(
-            [...events.values()]
-              .filter(
-                (trace) =>
-                  trace.owner === owner &&
-                  trace.occurredAt >= since &&
-                  isToolCall(trace.event, trace.summary),
-              )
-              .map((trace) => ({ summary: trace.summary, count: 1 })),
-            limit,
-          ),
-        ),
     };
   });
 }

@@ -4,15 +4,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import {
-  EventId,
-  Owner,
-  SessionId,
-  Source,
-  type Trace,
-  TraceStore,
-  TraceStoreError,
-} from "./traces.ts";
+import { EventId, Owner, SessionId, Source, type Trace } from "./traces.ts";
 
 /**
  * LLM usage: one record per model response, projected from stored transcript
@@ -138,9 +130,6 @@ export const SourceUsage = Schema.Struct({
 });
 export type SourceUsage = typeof SourceUsage.Type;
 
-export const ToolUsage = Schema.Struct({ tool: Schema.String, calls: Count });
-export type ToolUsage = typeof ToolUsage.Type;
-
 /** What the store aggregates for one owner over a window of local days. */
 export const UsageAggregates = Schema.Struct({
   /** Active days only, oldest first. */
@@ -161,8 +150,6 @@ export const UsageStats = Schema.Struct({
   /** First and last local day of the window, inclusive. */
   from: Day,
   to: Day,
-  /** Most calls first, at most {@link MAX_BREAKDOWN}. */
-  tools: Schema.Array(ToolUsage),
 });
 export type UsageStats = typeof UsageStats.Type;
 
@@ -554,8 +541,7 @@ const computeStats = Effect.fn("Usage.compute")(function* (owner: Owner, timeZon
   const offset = utcOffsetAt(timeZone, now);
   const window = statsWindow(now, offset);
   const usage = yield* (yield* UsageStore).aggregate(owner, window.since, offset);
-  const tools = yield* (yield* TraceStore).tools(owner, window.since, MAX_BREAKDOWN);
-  return { ...usage, from: window.from, to: window.to, tools } satisfies UsageStats;
+  return { ...usage, from: window.from, to: window.to } satisfies UsageStats;
 });
 
 /** Stats a stored snapshot holds, or none when it is missing or no longer decodes. */
@@ -612,5 +598,3 @@ export const publicUsageStats = Effect.fn("Usage.public")(function* () {
   const current = yield* storedSnapshot(owner);
   return Option.isSome(current) ? current.value : yield* writeStats(owner, timeZone);
 });
-
-export type UsageStatsError = UsageStoreError | TraceStoreError;

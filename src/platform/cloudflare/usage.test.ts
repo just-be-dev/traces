@@ -3,7 +3,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import { entryTrace, type IngestBatch } from "../../ingest.ts";
-import { Owner, TOOL_CALL_EVENTS, type Trace, TraceStore } from "../../traces.ts";
+import { Owner, type Trace, TraceStore } from "../../traces.ts";
 import {
   aggregate,
   recordPendingUsage,
@@ -13,7 +13,7 @@ import {
   usageOf,
 } from "../../usage.ts";
 import { sqliteD1 } from "./d1.testing.ts";
-import { storage, TOOL_SUMMARIES } from "./traces.ts";
+import { storage } from "./traces.ts";
 import { offsetModifier, usage } from "./usage.ts";
 
 const owner = Owner.make("owner");
@@ -79,10 +79,7 @@ const setup = async () => {
   return { db, run, insert };
 };
 
-test("placeholders line up with the event lists they bind", () => {
-  expect(TOOL_SUMMARIES.match(/IN \(([?, ]+)\)/)?.[1]?.split(",")).toHaveLength(
-    TOOL_CALL_EVENTS.length,
-  );
+test("offset modifiers are signed minutes", () => {
   expect(offsetModifier(-240)).toBe("-240 minutes");
   expect(offsetModifier(330)).toBe("+330 minutes");
 });
@@ -192,17 +189,6 @@ test("D1 aggregation matches the reference aggregation, by local day and hour", 
   );
   expect(result).toEqual(expected);
   expect(result.days.map((day) => day.day)).toEqual(["2026-10-10", "2026-10-11", "2026-10-12"]);
-
-  const tools = await run(
-    Effect.gen(function* () {
-      const store = yield* TraceStore;
-      return yield* store.tools(owner, since, 8);
-    }),
-  );
-  expect(tools).toEqual([
-    { tool: "Read", calls: 2 },
-    { tool: "Bash", calls: 1 },
-  ]);
 });
 
 test("D1 snapshots round-trip, keep the newer write, and read unparseable rows as missing", async () => {

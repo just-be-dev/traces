@@ -8,8 +8,6 @@ import {
   Identity,
   MAX_SEARCH_RESULTS,
   Owner,
-  rankTools,
-  TOOL_CALL_EVENTS,
   Trace,
   TraceStore,
   TraceStoreError,
@@ -209,31 +207,7 @@ export const storage = (raw: Effect.Effect<D1Statements>) =>
         catch: (cause) => new TraceStoreError({ operation: "markIndexed", cause }),
       });
     }),
-    // Groups by summary in SQL so only one row per distinct tool list leaves D1; the
-    // range on `events_recent` keeps the scan to the window.
-    tools: Effect.fn("TraceStore.tools")(function* (owner: Owner, since: string, limit: number) {
-      const d1 = yield* raw;
-      const result = yield* Effect.tryPromise({
-        try: () =>
-          d1
-            .prepare(TOOL_SUMMARIES)
-            .bind(owner, since, ...TOOL_CALL_EVENTS)
-            .all(),
-        catch: (cause) => new TraceStoreError({ operation: "tools", cause }),
-      });
-      const rows = yield* Schema.decodeUnknownEffect(Schema.Array(ToolSummaryRow))(
-        result.results,
-      ).pipe(Effect.mapError((cause) => new TraceStoreError({ operation: "tools", cause })));
-      return rankTools(rows, limit);
-    }),
   });
-
-const ToolSummaryRow = Schema.Struct({ summary: Schema.String, count: Schema.Int });
-
-// One placeholder per TOOL_CALL_EVENTS entry; the D1 test checks they line up.
-export const TOOL_SUMMARIES = `SELECT summary, COUNT(*) AS count FROM events
-  WHERE owner = ? AND occurred_at >= ? AND event IN (?, ?, ?) AND summary <> event
-  GROUP BY summary`;
 
 // Single tenant: Access admits only the configured owner email or service token, and
 // service-token requests carry no user email, so every admitted request maps to one owner.

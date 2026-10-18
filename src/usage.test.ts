@@ -294,16 +294,6 @@ test("public stats need no identity, use the owner's zone, and are served from a
   const result = await Effect.runPromise(
     Effect.gen(function* () {
       yield* TestClock.setTime(Date.parse("2026-10-14T02:00:00Z"));
-      const store = yield* TraceStore;
-      const toolCall = transcript("claude-code", [
-        {
-          type: "assistant",
-          uuid: "t",
-          timestamp: "2026-10-13T00:00:00Z",
-          message: { content: [{ type: "tool_use", name: "Read" }] },
-        },
-      ]);
-      yield* store.insertMany(toolCall);
       traces.push(
         ...transcript("claude-code", [claudeEntry("a", "m1", "text", "2026-10-13T20:00:00Z")]),
       );
@@ -337,8 +327,8 @@ test("public stats need no identity, use the owner's zone, and are served from a
   expect(result.first.stats).toMatchObject({
     to: "2026-10-13",
     days: [],
-    tools: [{ tool: "Read", calls: 1 }],
   });
+  expect(result.first.stats).not.toHaveProperty("tools");
   expect(result.cached).toEqual(result.first);
   expect([result.early, result.due, result.idle]).toEqual([false, true, false]);
   expect(result.fresh.stats.days.map((day) => [day.day, day.responses])).toEqual([

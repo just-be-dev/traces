@@ -37,7 +37,6 @@ const untouchedStore = Layer.succeed(TraceStore, {
   get: () => Effect.die("unexpected read"),
   unindexed: () => Effect.die("unexpected read"),
   markIndexed: () => Effect.die("unexpected write"),
-  tools: () => Effect.die("unexpected read"),
 });
 const storeFailure = (operation: TraceStoreError["operation"]) =>
   Effect.fail(new TraceStoreError({ operation, cause: new Error("D1") }));
@@ -48,7 +47,6 @@ const failingStore = Layer.succeed(TraceStore, {
   get: () => storeFailure("get"),
   unindexed: () => storeFailure("unindexed"),
   markIndexed: () => storeFailure("markIndexed"),
-  tools: () => storeFailure("tools"),
 });
 const untouchedIndex = Layer.succeed(TraceIndex, {
   index: () => Effect.die("unexpected index"),
@@ -754,7 +752,8 @@ test("usage stats are public, cacheable, and served from the snapshot", async ()
     );
     expect(first.headers.get("last-modified")).not.toBeNull();
     const stats = await body(first);
-    expect(stats).toMatchObject({ days: [], models: [], sources: [], tools: [], sessions: 0 });
+    expect(stats).toMatchObject({ days: [], models: [], sources: [], sessions: 0 });
+    expect(stats).not.toHaveProperty("tools");
     expect(stats.hours).toHaveLength(24);
     expect(stats.from).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     // Visitors can't pick the time zone; the query string is ignored.

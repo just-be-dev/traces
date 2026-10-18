@@ -12,7 +12,6 @@ import {
   MAX_CONTENT_RESULTS,
   MAX_SEARCH_RESULTS,
   normalize,
-  rankTools,
   Owner,
   SearchQuery,
   searchText,
@@ -92,7 +91,6 @@ test("operations authorize before reading the body or touching storage", async (
       get: () => Effect.die("unexpected read"),
       unindexed: () => Effect.die("unexpected read"),
       markIndexed: () => Effect.die("unexpected write"),
-      tools: () => Effect.die("unexpected read"),
     }),
     Layer.succeed(TraceIndex, {
       index: () => Effect.die("unexpected index"),
@@ -351,20 +349,4 @@ test("memory content index requires every term and caps results", async () => {
   expect(found.alpha).toHaveLength(MAX_CONTENT_RESULTS);
   expect(found.both).toHaveLength(11);
   expect(found.missing).toEqual([]);
-});
-
-test("tool ranking merges spellings across harnesses under the most frequent one", () => {
-  expect(
-    rankTools(
-      [
-        { summary: "Bash", count: 5 },
-        { summary: "bash, Read", count: 2 },
-        { summary: "read", count: 1 },
-      ],
-      8,
-    ),
-  ).toEqual([
-    { tool: "Bash", calls: 7 },
-    { tool: "Read", calls: 3 },
-  ]);
 });
