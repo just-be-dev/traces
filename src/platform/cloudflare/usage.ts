@@ -130,9 +130,11 @@ const HOURS = `SELECT CAST(strftime('%H', occurred_at, ?) AS INTEGER) AS hour, C
   FROM usage_records WHERE owner = ? AND occurred_at >= ?
   GROUP BY hour HAVING hour IS NOT NULL`;
 
-const MODELS = `SELECT source, model, COUNT(*) AS responses, ${TOKEN_SUMS}
+// Sources are fixed identifiers without commas, so group_concat's list splits cleanly.
+const MODELS = `SELECT model, group_concat(DISTINCT source) AS sources, COUNT(*) AS responses,
+    ${TOKEN_SUMS}
   FROM usage_records WHERE owner = ? AND occurred_at >= ?
-  GROUP BY source, model ORDER BY responses DESC, ${TOKEN_TOTAL} DESC LIMIT ${MAX_BREAKDOWN}`;
+  GROUP BY model ORDER BY responses DESC, ${TOKEN_TOTAL} DESC LIMIT ${MAX_BREAKDOWN}`;
 
 const SOURCES = `SELECT source, COUNT(*) AS responses, COUNT(DISTINCT session_id) AS sessions, ${TOKEN_SUMS}
   FROM usage_records WHERE owner = ? AND occurred_at >= ?
@@ -155,7 +157,7 @@ const DayRow = Schema.Struct({
 });
 const HourRow = Schema.Struct({ hour: Schema.Int, responses: Schema.Int });
 const ModelRow = Schema.Struct({
-  source: Schema.String,
+  sources: Schema.String,
   model: Schema.NullOr(Schema.String),
   responses: Schema.Int,
   ...TokenColumns,
@@ -286,7 +288,11 @@ export const usage = (raw: Effect.Effect<D1Statements>) => {
       return yield* Schema.decodeUnknownEffect(UsageAggregates)({
         days,
         hours: Array.from({ length: 24 }, (_, hour) => byHour.get(hour) ?? 0),
-        models: models.map(({ model, ...row }) => (model === null ? row : { ...row, model })),
+        models: models.map(({ model, sources, ...row }) => ({
+          ...row,
+          ...(model === null ? {} : { model }),
+          sources: sources.split(",").sort(),
+        })),
         sources,
         sessions: sessions[0]?.sessions ?? 0,
       }).pipe(Effect.mapError((cause) => new UsageStoreError({ operation: "aggregate", cause })));

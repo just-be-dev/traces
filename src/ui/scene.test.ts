@@ -24,6 +24,7 @@ test("loaded stats show the token map, totals, and breakdowns", () => {
     expect(text("Busiest day: Mon, Oct 12, 2026, 906K tokens")).toBeVisible(),
     expect(text("3 days")).toBeVisible(),
     expect(text("claude-opus-5-5")).toBeVisible(),
+    expect(text("Claude Code, pi")).toBeVisible(),
     expect(text("unknown model")).toBeVisible(),
     expect(role("region", { name: "Top tools" })).toBeAbsent(),
     expect(role("group", { name: "Color days by" })).toBeAbsent(),

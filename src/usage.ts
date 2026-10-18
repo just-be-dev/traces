@@ -117,7 +117,8 @@ export const ModelUsage = Schema.Struct({
   ...Tokens.fields,
   /** Absent when the harness didn't say which model answered. */
   model: Schema.optional(Schema.String),
-  source: Source,
+  /** Harnesses that reported this model, sorted by name. */
+  sources: Schema.Array(Source),
   responses: Count,
 });
 export type ModelUsage = typeof ModelUsage.Type;
@@ -334,7 +335,7 @@ const byResponses = <A extends { readonly responses: number } & Tokens>(a: A, b:
  */
 export const aggregate = (records: ReadonlyArray<Usage>, offset: UtcOffset): UsageAggregates => {
   const days = new Map<string, DayActivity & { ids: Set<string> }>();
-  const models = new Map<string, ModelUsage>();
+  const models = new Map<string | null, ModelUsage & { ids: Set<Source> }>();
   const sources = new Map<string, SourceUsage & { ids: Set<string> }>();
   const hours = Array.from({ length: 24 }, () => 0);
   const sessions = new Set<string>();
@@ -347,13 +348,15 @@ export const aggregate = (records: ReadonlyArray<Usage>, offset: UtcOffset): Usa
     const dayEntry = days.get(day) ?? { ...zero, day, responses: 0, sessions: 0, ids: new Set() };
     dayEntry.ids.add(usage.sessionId);
     days.set(day, { ...add(dayEntry, usage), responses: dayEntry.responses + 1 });
-    const modelKey = JSON.stringify([usage.source, usage.model ?? null]);
-    const modelEntry: ModelUsage = models.get(modelKey) ?? {
+    const modelKey = usage.model ?? null;
+    const modelEntry = models.get(modelKey) ?? {
       ...zero,
-      source: usage.source,
       ...(usage.model ? { model: usage.model } : {}),
+      sources: [],
       responses: 0,
+      ids: new Set<Source>(),
     };
+    modelEntry.ids.add(usage.source);
     models.set(modelKey, { ...add(modelEntry, usage), responses: modelEntry.responses + 1 });
     const sourceEntry = sources.get(usage.source) ?? {
       ...zero,
@@ -370,7 +373,10 @@ export const aggregate = (records: ReadonlyArray<Usage>, offset: UtcOffset): Usa
       .map(({ ids, ...day }) => ({ ...day, sessions: ids.size }))
       .sort((a, b) => a.day.localeCompare(b.day)),
     hours,
-    models: [...models.values()].sort(byResponses).slice(0, MAX_BREAKDOWN),
+    models: [...models.values()]
+      .map(({ ids, ...model }) => ({ ...model, sources: [...ids].sort() }))
+      .sort(byResponses)
+      .slice(0, MAX_BREAKDOWN),
     sources: [...sources.values()]
       .map(({ ids, ...source }) => ({ ...source, sessions: ids.size }))
       .sort(byResponses),

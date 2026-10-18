@@ -172,6 +172,12 @@ test("D1 aggregation matches the reference aggregation, by local day and hour", 
         timestamp: "2025-01-01T00:00:00Z",
         message: { role: "assistant", usage: { input: 5 } },
       },
+      {
+        type: "message",
+        id: "q",
+        timestamp: "2026-10-11T20:00:00Z",
+        message: { role: "assistant", model: "claude-opus-5-5", usage: { input: 7 } },
+      },
     ]),
   ];
   await insert(traces);
@@ -189,6 +195,10 @@ test("D1 aggregation matches the reference aggregation, by local day and hour", 
   );
   expect(result).toEqual(expected);
   expect(result.days.map((day) => day.day)).toEqual(["2026-10-10", "2026-10-11", "2026-10-12"]);
+  expect(result.models.map((model) => [model.model, model.sources, model.responses])).toEqual([
+    ["claude-opus-5-5", ["claude-code", "pi"], 4],
+    ["gpt-5.5", ["codex"], 1],
+  ]);
 });
 
 test("D1 snapshots round-trip, keep the newer write, and read unparseable rows as missing", async () => {

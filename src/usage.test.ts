@@ -198,30 +198,35 @@ test("the stats window spans 53 weeks of local days ending today", () => {
   expect(statsWindow(now, 0).to).toBe("2026-10-14");
 });
 
-test("aggregation groups by local day and hour, model, and source", () => {
+test("aggregation groups by local day and hour, model across harnesses, and source", () => {
   const records = usageOf([
     ...transcript("claude-code", [
       claudeEntry("a", "msg_1", "text", "2026-10-11T03:30:00Z"),
       claudeEntry("b", "msg_2", "text", "2026-10-11T18:00:00Z"),
     ]),
     ...transcript("codex", [codexContext(1, "gpt-5.5"), codexTokens(2, 10)], "session-2"),
+    ...transcript("pi", [piAssistant("p", "resp_1", 1)], "session-3"),
   ]);
   const result = aggregate(records, -240);
   expect(result.days.map((day) => [day.day, day.responses, day.sessions])).toEqual([
     ["2026-10-10", 1, 1],
     ["2026-10-11", 1, 1],
     ["2026-10-12", 1, 1],
+    ["2026-10-14", 1, 1],
   ]);
   expect(result.hours[23]).toBe(1);
   expect(result.hours[14]).toBe(1);
   expect(result.hours[18]).toBe(1);
-  expect(result.sessions).toBe(2);
-  expect(result.models.map((model) => [model.source, model.model, model.responses])).toEqual([
-    ["claude-code", "claude-opus-5-5", 2],
-    ["codex", "gpt-5.5", 1],
+  expect(result.hours[1]).toBe(1);
+  expect(result.sessions).toBe(3);
+  // The same model from two harnesses is one row.
+  expect(result.models.map((model) => [model.model, model.sources, model.responses])).toEqual([
+    ["claude-opus-5-5", ["claude-code", "pi"], 3],
+    ["gpt-5.5", ["codex"], 1],
   ]);
   expect(result.sources.map((source) => [source.source, source.sessions])).toEqual([
     ["claude-code", 1],
+    ["pi", 1],
     ["codex", 1],
   ]);
 });
@@ -258,7 +263,7 @@ test("the sweep records each response once, inherits Codex models across runs, a
   expect(result.second).toEqual({ scanned: 2, projected: 2 });
   expect(result.idle).toEqual({ scanned: 0, projected: 0 });
   expect(result.stats.models).toEqual([
-    expect.objectContaining({ source: "codex", model: "gpt-5.5", responses: 2 }),
+    expect.objectContaining({ sources: ["codex"], model: "gpt-5.5", responses: 2 }),
   ]);
 });
 

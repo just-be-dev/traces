@@ -262,9 +262,9 @@ const loadedView = (stats: UsageStats, h: HtmlBuilder<Message>): Html => {
       barList(
         "Models",
         stats.models.map((model) => ({
-          key: `${model.source}:${model.model ?? ""}`,
+          key: model.model ?? "",
           label: model.model ?? "unknown model",
-          detail: SOURCE_NAMES[model.source] ?? model.source,
+          detail: model.sources.map((source) => SOURCE_NAMES[source] ?? source).join(", "),
           value: model.responses,
           display: `${compact(model.responses)} · ${compact(totalTokens(model))} tok`,
         })),

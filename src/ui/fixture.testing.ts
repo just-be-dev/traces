@@ -21,12 +21,12 @@ export const stats: UsageStats = {
   hours: Array.from({ length: 24 }, (_, hour) => (hour === 15 ? 30 : hour === 9 ? 27 : 0)),
   models: [
     {
-      source: "claude-code",
       model: "claude-opus-5-5",
+      sources: ["claude-code", "pi"],
       responses: 45,
       ...tokens(5_000, 2_500, 900_000),
     },
-    { source: "codex", responses: 12, ...tokens(130, 65, 11_200) },
+    { sources: ["codex"], responses: 12, ...tokens(130, 65, 11_200) },
   ],
   sources: [
     { source: "claude-code", responses: 45, sessions: 5, ...tokens(5_000, 2_500, 900_000) },
