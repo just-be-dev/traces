@@ -20,6 +20,7 @@ import {
   appendFileSync,
   chmodSync,
   closeSync,
+  existsSync,
   fstatSync,
   mkdirSync,
   openSync,
@@ -34,7 +35,7 @@ import {
 } from "node:fs";
 import { homedir, hostname } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 export const UPLOADER_VERSION = "0.1.0";
 export const HARNESSES = ["claude-code", "codex", "pi", "omp"] as const;
@@ -1001,24 +1002,50 @@ export const conductorCursorPath = (home: string, database: string): string =>
   join(home, "state", "conductor", `${fileDigest(database)}.json`);
 
 /** Opens read-only with the runtime's SQLite: `bun:sqlite` under Bun, else `node:sqlite`. */
-const openConductor = async (path: string): Promise<ConductorDatabase> => {
+const openSqlite = async (location: string): Promise<ConductorDatabase> => {
   // Built at runtime: Bun resolves constant specifiers at load time and has no
   // `node:sqlite`, and type checkers shouldn't need either module's types.
   const sqlite = (runtime: string) => [runtime, "sqlite"].join(":");
+  let database: ConductorDatabase;
   if (process.versions.bun) {
-    const { Database } = await import(sqlite("bun"));
-    const db = new Database(path, { readonly: true });
-    return {
+    const { Database, constants } = await import(sqlite("bun"));
+    const db = new Database(location, constants.SQLITE_OPEN_READONLY | constants.SQLITE_OPEN_URI);
+    database = {
       all: (sql, ...params) => db.query(sql).all(...params) as Array<ConductorRow>,
       close: () => db.close(),
     };
+  } else {
+    const { DatabaseSync } = await import(sqlite("node"));
+    const db = new DatabaseSync(location, { readOnly: true });
+    database = {
+      all: (sql, ...params) => db.prepare(sql).all(...params) as Array<ConductorRow>,
+      close: () => db.close(),
+    };
   }
-  const { DatabaseSync } = await import(sqlite("node"));
-  const db = new DatabaseSync(path, { readOnly: true });
-  return {
-    all: (sql, ...params) => db.prepare(sql).all(...params) as Array<ConductorRow>,
-    close: () => db.close(),
-  };
+  // SQLite opens lazily; a query surfaces a file it can't read.
+  try {
+    database.all("SELECT count(*) FROM sqlite_master");
+  } catch (error) {
+    database.close();
+    throw error;
+  }
+  return database;
+};
+
+/**
+ * Opens Conductor's database without writing to it. A WAL database that Conductor
+ * closed cleanly has no `-wal` or `-shm` file, and a read-only connection can't
+ * create the `-shm` it needs. With no `-wal` there are no uncheckpointed writes, so
+ * the file is opened as immutable instead. While Conductor runs, both files exist
+ * and the ordinary read-only connection works.
+ */
+const openConductor = async (path: string): Promise<ConductorDatabase> => {
+  try {
+    return await openSqlite(path);
+  } catch (error) {
+    if (existsSync(`${path}-wal`)) throw error;
+    return openSqlite(`${pathToFileURL(path).href}?immutable=1`);
+  }
 };
 
 const readConductorCursor = (path: string, database: string): ConductorCursor => {

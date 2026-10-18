@@ -784,6 +784,24 @@ test("a recreated Conductor database starts its sessions over", async () => {
   db.close();
 });
 
+test("a WAL database Conductor closed cleanly is read without writing beside it", async () => {
+  const { path, db } = conductorDb("wal.db");
+  db.run("PRAGMA journal_mode = WAL");
+  message(db, "m1", "s-new", "user", "hello");
+  db.run("PRAGMA wal_checkpoint(TRUNCATE)");
+  db.close();
+  // As Conductor leaves it on exit: checkpointed, with no -wal or -shm file. (Apple's
+  // SQLite keeps an empty -wal after closing, so remove them here.)
+  rmSync(`${path}-wal`, { force: true });
+  rmSync(`${path}-shm`, { force: true });
+  expect(await importConductor(conductorOptions(path))).toMatchObject({
+    outcome: "uploaded",
+    sent: 2,
+  });
+  expect(existsSync(`${path}-wal`)).toBe(false);
+  expect(existsSync(`${path}-shm`)).toBe(false);
+});
+
 test("a missing Conductor database is not an error", async () => {
   expect(await importConductor(conductorOptions(join(work, "none.db")))).toMatchObject({
     outcome: "missing",
