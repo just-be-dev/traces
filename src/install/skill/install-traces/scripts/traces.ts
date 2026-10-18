@@ -6,7 +6,9 @@
 //   login --url <origin> --code <claim code>   exchange a one-time claim code for a token
 //   hook <claude-code|codex>                   agent hook: upload this turn in the background
 //   upload <harness> <file...> [--harness-version <v>]
-//   sync <claude-code|codex|pi|omp|all>        backfill every existing session file
+//   sync <claude-code|codex|pi|omp|conductor|all>
+//                                              backfill every existing session file,
+//                                              or import Conductor's database
 //   status                                     show login and upload progress
 //
 // It never prints or logs tokens or payload contents. Logs hold file basenames,
@@ -37,6 +39,9 @@ import { fileURLToPath } from "node:url";
 export const UPLOADER_VERSION = "0.1.0";
 export const HARNESSES = ["claude-code", "codex", "pi", "omp"] as const;
 export type Harness = (typeof HARNESSES)[number];
+/** Sources imported from an app's database rather than read from transcript files. */
+export const IMPORTERS = ["conductor"] as const;
+export type Importer = (typeof IMPORTERS)[number];
 
 /** Lines longer than this many UTF-8 bytes are skipped, not uploaded. */
 export const MAX_LINE_BYTES = 1_000_000;
@@ -692,7 +697,7 @@ const send = async (
   return { ok: false, reason: "failed" };
 };
 
-const clientInfo = (harness: Harness, harnessVersion: string | undefined) => {
+const clientInfo = (harness: Harness | Importer, harnessVersion: string | undefined) => {
   const host = hostname();
   const platform = process.platform && process.arch ? `${process.platform}-${process.arch}` : "";
   return {
@@ -952,6 +957,319 @@ export const listSessionFiles = (
 };
 
 // ---------------------------------------------------------------------------
+// Conductor import
+//
+// Conductor (conductor.build) keeps its agents' conversations in a SQLite database,
+// not in transcript files: one `session_messages` row per user prompt or streamed
+// agent message (Claude Agent SDK messages as JSON). The Claude Code transcripts it
+// started are usually pruned from ~/.claude long before, so the database can be the
+// only copy. Each row becomes one entry, keyed by its row ID, and each session
+// starts with a `session` entry holding the session row and its workspace.
+
+export type ConductorRow = Record<string, unknown>;
+
+/** The few calls the importer needs from `bun:sqlite` or `node:sqlite`. */
+export interface ConductorDatabase {
+  readonly all: (sql: string, ...params: Array<string | number>) => Array<ConductorRow>;
+  readonly close: () => void;
+}
+
+export interface ConductorCursor {
+  readonly path: string;
+  /** Per Conductor session, the rowid of the last message uploaded or skipped. */
+  readonly sessions: Record<string, number>;
+  readonly uploadedBytes: number;
+}
+
+export interface ConductorOptions extends Omit<UploadOptions, "harnessVersion"> {
+  /** Defaults to `$CONDUCTOR_DB`, then Conductor's database in Application Support. */
+  readonly database?: string;
+}
+
+export interface ConductorResult extends FileResult {
+  readonly sessions: number;
+}
+
+/** Rows read per query, so a long session isn't held in memory at once. */
+const CONDUCTOR_PAGE_ROWS = 1000;
+
+export const conductorDatabasePath = (env: Env = process.env): string =>
+  env.CONDUCTOR_DB ||
+  join(homedir(), "Library", "Application Support", "com.conductor.app", "conductor.db");
+
+export const conductorCursorPath = (home: string, database: string): string =>
+  join(home, "state", "conductor", `${fileDigest(database)}.json`);
+
+/** Opens read-only with the runtime's SQLite: `bun:sqlite` under Bun, else `node:sqlite`. */
+const openConductor = async (path: string): Promise<ConductorDatabase> => {
+  // Built at runtime: Bun resolves constant specifiers at load time and has no
+  // `node:sqlite`, and type checkers shouldn't need either module's types.
+  const sqlite = (runtime: string) => [runtime, "sqlite"].join(":");
+  if (process.versions.bun) {
+    const { Database } = await import(sqlite("bun"));
+    const db = new Database(path, { readonly: true });
+    return {
+      all: (sql, ...params) => db.query(sql).all(...params) as Array<ConductorRow>,
+      close: () => db.close(),
+    };
+  }
+  const { DatabaseSync } = await import(sqlite("node"));
+  const db = new DatabaseSync(path, { readOnly: true });
+  return {
+    all: (sql, ...params) => db.prepare(sql).all(...params) as Array<ConductorRow>,
+    close: () => db.close(),
+  };
+};
+
+const readConductorCursor = (path: string, database: string): ConductorCursor => {
+  const raw = readJson(path);
+  const sessions: Record<string, number> = {};
+  if (isRecord(raw) && isRecord(raw.sessions)) {
+    for (const [id, rowid] of Object.entries(raw.sessions)) {
+      if (typeof rowid === "number" && Number.isSafeInteger(rowid)) sessions[id] = rowid;
+    }
+  }
+  const uploadedBytes =
+    isRecord(raw) && typeof raw.uploadedBytes === "number" ? raw.uploadedBytes : 0;
+  return { path: database, sessions, uploadedBytes };
+};
+
+/**
+ * A message row as an entry: every column as stored, except that an agent message's
+ * `content` (SDK JSON) is parsed. User prompts are plain text and stay strings, as
+ * does content that doesn't parse.
+ */
+export const conductorEntry = (row: ConductorRow): ConductorRow => {
+  const { rowid: _rowid, ...columns } = row;
+  if (columns.role !== "assistant" || typeof columns.content !== "string") return columns;
+  try {
+    const content: unknown = JSON.parse(columns.content);
+    return isRecord(content) ? { ...columns, content } : columns;
+  } catch {
+    return columns;
+  }
+};
+
+/** Workspace and repository columns worth keeping; scripts and prompts are left out. */
+const WORKSPACE_COLUMNS = [
+  "id",
+  "workspace_name",
+  "directory_name",
+  "workspace_path",
+  "branch",
+  "state",
+  "pr_title",
+] as const;
+const REPO_COLUMNS = ["id", "name", "remote_url", "root_path", "default_branch"] as const;
+
+const pick = (row: ConductorRow | undefined, columns: ReadonlyArray<string>) =>
+  row === undefined
+    ? undefined
+    : Object.fromEntries(columns.filter((column) => column in row).map((c) => [c, row[c]]));
+
+/** The `session` entry that opens each session: its row, workspace, and repository. */
+export const conductorHeader = (
+  session: ConductorRow,
+  workspace: ConductorRow | undefined,
+  repo: ConductorRow | undefined,
+): ConductorRow => {
+  const header: ConductorRow = { type: "session", session };
+  const picked = pick(workspace, WORKSPACE_COLUMNS);
+  if (picked) header.workspace = picked;
+  const pickedRepo = pick(repo, REPO_COLUMNS);
+  if (pickedRepo) header.repo = pickedRepo;
+  return header;
+};
+
+/** The workspace path, or else the cwd of the session's first SDK `init` message. */
+const conductorCwd = (
+  db: ConductorDatabase,
+  sessionId: string,
+  workspace: ConductorRow | undefined,
+): string | undefined => {
+  const path = nonEmptyString(workspace?.workspace_path);
+  if (path) return path;
+  const [init] = db.all(
+    `SELECT content FROM session_messages WHERE session_id = ? AND role = 'assistant'
+       AND content LIKE '%"subtype":"init"%' ORDER BY rowid LIMIT 1`,
+    sessionId,
+  );
+  const content = init === undefined ? undefined : conductorEntry({ role: "assistant", ...init });
+  return isRecord(content?.content) ? nonEmptyString(content.content.cwd) : undefined;
+};
+
+const utf8Bytes = (value: string) => Buffer.byteLength(value, "utf8");
+
+/**
+ * Uploads Conductor messages added since the last import, session by session, most
+ * recently active first. A session's cursor advances only after the server accepts
+ * a batch, so a failure resends the same rows next time; the server dedups them by
+ * row ID. A session whose rows are now below its cursor (a recreated database)
+ * starts over.
+ */
+export const importConductor = async (
+  options: ConductorOptions = {},
+  progress: (message: string) => void = () => {},
+): Promise<ConductorResult> => {
+  const env = options.env ?? process.env;
+  const home = options.home ?? tracesHome(env);
+  const done = (outcome: Outcome, sent = 0, inserted = 0, skipped = 0, sessions = 0) => ({
+    ...result(outcome, sent, inserted, skipped),
+    sessions,
+  });
+  const config = readConfig(home);
+  if (!config) {
+    uploadLog(home, "not logged in; run login");
+    return done("unconfigured");
+  }
+  const database = resolve(options.database ?? conductorDatabasePath(env));
+  try {
+    if (!statSync(database).isFile()) return done("missing");
+  } catch {
+    return done("missing");
+  }
+  const cursorPath = conductorCursorPath(home, database);
+  ensureDir(dirname(cursorPath));
+  const release = await acquireLock(
+    `${cursorPath}.lock`,
+    options.lockTimeoutMs ?? LOCK_TIMEOUT_MS,
+    options.lockPollMs ?? LOCK_POLL_MS,
+  );
+  if (!release) {
+    uploadLog(home, "lock busy; conductor import skipped");
+    return done("locked");
+  }
+  let db: ConductorDatabase | undefined;
+  let sent = 0;
+  let inserted = 0;
+  let skipped = 0;
+  let sessionsSent = 0;
+  try {
+    try {
+      db = await openConductor(database);
+    } catch {
+      uploadLog(home, `could not open file=${basename(database)}`);
+      return done("failed");
+    }
+    let cursor = readConductorCursor(cursorPath, canonicalPath(database));
+    const save = () => writeAtomic(cursorPath, JSON.stringify(cursor));
+    const active = db.all(
+      `SELECT session_id AS id, max(rowid) AS last FROM session_messages
+         WHERE session_id IS NOT NULL GROUP BY session_id ORDER BY last DESC`,
+    );
+    for (const [index, { id, last }] of active.entries()) {
+      if (typeof id !== "string" || id === "" || typeof last !== "number") continue;
+      let after = cursor.sessions[id];
+      if (after !== undefined && after > last) {
+        uploadLog(home, `rewritten; restarting conductor session file=${basename(database)}`);
+        after = undefined;
+      }
+      if (after !== undefined && after >= last) continue;
+      const [session] = db.all("SELECT * FROM sessions WHERE id = ?", id);
+      const [workspace] =
+        session?.workspace_id == null
+          ? []
+          : db.all("SELECT * FROM workspaces WHERE id = ?", String(session.workspace_id));
+      const [repo] =
+        workspace?.repository_id == null
+          ? []
+          : db.all("SELECT * FROM repos WHERE id = ?", String(workspace.repository_id));
+      const cwd = conductorCwd(db, id, workspace);
+      const batch: Batch = {
+        client: clientInfo("conductor", undefined),
+        session: { id, stream: id, ...(cwd ? { cwd } : {}) },
+      };
+      const sender: Sender = {
+        config,
+        home,
+        file: `${database}#${id}`,
+        retryDelaysMs: options.retryDelaysMs ?? DEFAULT_RETRY_DELAYS_MS,
+        requestTimeoutMs: options.requestTimeoutMs ?? REQUEST_TIMEOUT_MS,
+      };
+
+      let entries: Array<Entry> = [];
+      let bytes = 0;
+      // Rowid of the last row examined, including skipped ones.
+      let consumed = after ?? 0;
+      const flush = async (): Promise<SendResult> => {
+        const outcome =
+          entries.length > 0
+            ? await send(sender, batch, entries)
+            : ({ ok: true, sent: 0, inserted: 0, skipped: 0 } as const);
+        if (!outcome.ok) return outcome;
+        sent += outcome.sent;
+        inserted += outcome.inserted;
+        skipped += outcome.skipped;
+        const accepted = outcome.skipped === 0 ? bytes : sentBytes(entries, outcome);
+        cursor = {
+          ...cursor,
+          sessions: { ...cursor.sessions, [id]: consumed },
+          uploadedBytes: cursor.uploadedBytes + accepted,
+        };
+        save();
+        entries = [];
+        bytes = 0;
+        return outcome;
+      };
+      const add = async (offset: number, raw: unknown): Promise<SendResult | undefined> => {
+        const length = utf8Bytes(JSON.stringify(raw));
+        if (length > MAX_LINE_BYTES) {
+          uploadLog(
+            home,
+            `skipped oversize entry offset=${offset} bytes=${length} file=${basename(database)}`,
+          );
+          skipped++;
+          return undefined;
+        }
+        if (entries.length > 0 && bytes + length > MAX_BATCH_BYTES) {
+          const outcome = await flush();
+          if (!outcome.ok) return outcome;
+        }
+        entries.push({ offset, raw, length });
+        bytes += length;
+        if (entries.length >= MAX_BATCH_ENTRIES) {
+          const outcome = await flush();
+          if (!outcome.ok) return outcome;
+        }
+        return undefined;
+      };
+      const stop = (outcome: SendResult) =>
+        outcome.ok ? undefined : done(outcome.reason, sent, inserted, skipped, sessionsSent);
+
+      if (after === undefined && session !== undefined) {
+        const failed = await add(0, conductorHeader(session, workspace, repo));
+        if (failed) return stop(failed) ?? done("failed");
+      }
+      for (;;) {
+        const rows = db.all(
+          `SELECT rowid, * FROM session_messages WHERE session_id = ? AND rowid > ?
+             ORDER BY rowid LIMIT ${CONDUCTOR_PAGE_ROWS}`,
+          id,
+          consumed,
+        );
+        for (const row of rows) {
+          const rowid = Number(row.rowid);
+          const failed = await add(rowid, conductorEntry(row));
+          if (failed) return stop(failed) ?? done("failed");
+          consumed = rowid;
+        }
+        if (rows.length < CONDUCTOR_PAGE_ROWS) break;
+      }
+      const outcome = await flush();
+      if (!outcome.ok) return stop(outcome) ?? done("failed");
+      sessionsSent++;
+      progress(
+        `import ${index + 1}/${active.length} conductor session uploaded: entries sent=${sent} skipped=${skipped}`,
+      );
+    }
+    return done(sent > 0 ? "uploaded" : "unchanged", sent, inserted, skipped, sessionsSent);
+  } finally {
+    db?.close();
+    release();
+  }
+};
+
+// ---------------------------------------------------------------------------
 // Commands
 
 const isHarness = (value: string | undefined): value is Harness =>
@@ -961,7 +1279,7 @@ const usage = `usage:
   traces login --url <origin> --code <claim code>
   traces hook <claude-code|codex>
   traces upload <claude-code|codex|pi|omp> <file...> [--harness-version <version>]
-  traces sync <claude-code|codex|pi|omp|all>
+  traces sync <claude-code|codex|pi|omp|conductor|all>
   traces status`;
 
 const flag = (args: Array<string>, name: string): string | undefined => {
@@ -1126,7 +1444,8 @@ const sync = async (args: Array<string>, home: string): Promise<number> => {
   const target = args[0];
   const harnesses: ReadonlyArray<Harness> =
     target === "all" ? HARNESSES : isHarness(target) ? [target] : [];
-  if (harnesses.length === 0) {
+  const conductor = target === "all" || target === "conductor";
+  if (harnesses.length === 0 && !conductor) {
     console.error(usage);
     return 2;
   }
@@ -1156,6 +1475,19 @@ const sync = async (args: Array<string>, home: string): Promise<number> => {
     }
     progress(
       `sync ${index + 1}/${files.length} ${file.harness} ${basename(file.path)} ${outcome.outcome}: entries sent=${sent} skipped=${skipped} failed files=${failed}`,
+    );
+  }
+  if (conductor) {
+    const imported = await importConductor({ home }, progress);
+    sent += imported.sent;
+    skipped += imported.skipped;
+    if (imported.outcome === "unauthorized" || imported.outcome === "unconfigured") {
+      progress(`sync stopped: token rejected; re-run login`);
+      return 1;
+    }
+    if (imported.outcome === "failed" || imported.outcome === "locked") failed++;
+    progress(
+      `sync conductor ${imported.outcome}: ${imported.sessions} sessions, entries sent=${imported.sent} skipped=${imported.skipped}`,
     );
   }
   progress(
@@ -1191,6 +1523,15 @@ const status = (home: string): number => {
     }
     const pending = pendingFiles(home, harness).length;
     console.log(`${harness}: ${tracked} files tracked${pending ? `, ${pending} pending` : ""}`);
+  }
+  const conductor = readConductorCursor(
+    conductorCursorPath(home, resolve(conductorDatabasePath())),
+    "",
+  );
+  const imported = Object.keys(conductor.sessions).length;
+  if (imported > 0) {
+    console.log(`conductor: ${imported} sessions tracked`);
+    bytes += conductor.uploadedBytes;
   }
   console.log(`uploaded: ${bytes} bytes`);
   return 0;

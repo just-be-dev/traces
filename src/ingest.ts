@@ -31,7 +31,7 @@ import {
 const Bounded = (max: number) =>
   Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(max));
 
-export const Harness = Schema.Literals(["claude-code", "codex", "pi", "omp"]);
+export const Harness = Schema.Literals(["claude-code", "codex", "pi", "omp", "conductor"]);
 export type Harness = typeof Harness.Type;
 
 /** pi and its fork omp (oh-my-pi) share the session entry format. */
@@ -426,6 +426,20 @@ const text = (value: unknown) =>
 const items = (value: unknown) => (Array.isArray(value) ? value.map(fields) : []);
 
 /**
+ * Conductor entries are rows of its `session_messages` table, plus one `session`
+ * entry per session. An agent row's `content` is a Claude Agent SDK message; a user
+ * row's is the prompt text.
+ */
+const isConductorHeader = (entry: Record<string, unknown> | undefined) =>
+  entry?.type === "session" && fields(entry.session) !== undefined;
+
+/** The SDK message a Conductor row carries, if it carries one. */
+export const conductorMessage = (raw: unknown) => {
+  const entry = fields(raw);
+  return isConductorHeader(entry) ? undefined : fields(entry?.content);
+};
+
+/**
  * Stable key of a transcript line within its file: the harness's own entry ID when
  * it has one (so a rewritten file dedups), otherwise the line's byte offset.
  */
@@ -434,16 +448,31 @@ export const entryKey = (harness: Harness, raw: unknown, offset: number): string
   const key =
     harness === "claude-code"
       ? text(entry?.uuid)
-      : isPiFamily(harness)
-        ? text(entry?.id)
-        : typeof entry?.ordinal === "number" && Number.isSafeInteger(entry.ordinal)
-          ? `#${entry.ordinal}`
-          : undefined;
+      : harness === "conductor"
+        ? isConductorHeader(entry)
+          ? "session"
+          : text(entry?.id)
+        : isPiFamily(harness)
+          ? text(entry?.id)
+          : typeof entry?.ordinal === "number" && Number.isSafeInteger(entry.ordinal)
+            ? `#${entry.ordinal}`
+            : undefined;
   return key ?? `@${offset}`;
+};
+
+/** The SDK message's `type` and `subtype`, or the row's role for a user prompt. */
+const conductorEvent = (raw: unknown): string => {
+  const entry = fields(raw);
+  if (isConductorHeader(entry)) return "session";
+  const message = conductorMessage(raw);
+  const type = text(message?.type) ?? text(entry?.role) ?? "entry";
+  const subtype = text(message?.subtype);
+  return subtype ? `${type}/${subtype}` : type;
 };
 
 /** `type`, refined by Codex's payload type or pi's message role. */
 export const entryEvent = (harness: Harness, raw: unknown): string => {
+  if (harness === "conductor") return conductorEvent(raw);
   const entry = fields(raw);
   const type = text(entry?.type) ?? "entry";
   const detail =
@@ -462,7 +491,9 @@ export const entryTools = (harness: Harness, raw: unknown): ReadonlyArray<string
   if (harness === "codex") {
     names.push(text(fields(entry?.payload)?.name));
   } else {
-    const message = fields(entry?.message);
+    const message = fields(
+      harness === "conductor" ? conductorMessage(raw)?.message : entry?.message,
+    );
     for (const item of items(message?.content)) {
       if (item?.type === "tool_use" || item?.type === "toolCall") names.push(text(item.name));
     }
@@ -471,8 +502,24 @@ export const entryTools = (harness: Harness, raw: unknown): ReadonlyArray<string
   return [...new Set(names.filter((name) => name !== undefined))];
 };
 
-const occurredAt = (raw: unknown, fallback: string) => {
-  const timestamp = text(fields(raw)?.timestamp);
+/** SQLite's `datetime('now')` format, which is UTC without saying so. */
+const SQLITE_DATETIME = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(\.\d+)?$/;
+
+/** A Conductor row's `created_at` as ISO 8601; older rows use SQLite's format. */
+const conductorTimestamp = (raw: unknown): string | undefined => {
+  const entry = fields(raw);
+  const created = text(
+    isConductorHeader(entry) ? fields(entry?.session)?.created_at : entry?.created_at,
+  );
+  if (created === undefined) return undefined;
+  if (!SQLITE_DATETIME.test(created)) return created;
+  const ms = Date.parse(`${created.replace(" ", "T")}Z`);
+  return Number.isNaN(ms) ? undefined : new Date(ms).toISOString();
+};
+
+const occurredAt = (harness: Harness, raw: unknown, fallback: string) => {
+  const timestamp =
+    harness === "conductor" ? conductorTimestamp(raw) : text(fields(raw)?.timestamp);
   return timestamp !== undefined && !Number.isNaN(Date.parse(timestamp)) ? timestamp : fallback;
 };
 
@@ -498,7 +545,7 @@ export const entryTrace = (
     source: harness,
     sessionId: SessionId.make(batch.session.id),
     event: EventName.make(event),
-    occurredAt: occurredAt(entry.raw, receivedAt),
+    occurredAt: occurredAt(harness, entry.raw, receivedAt),
     summary: tools.length > 0 ? tools.join(", ") : event,
     raw: entry.raw,
   };

@@ -4,6 +4,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import { conductorMessage } from "./ingest.ts";
 import { EventId, Owner, SessionId, Source, type Trace } from "./traces.ts";
 
 /**
@@ -20,6 +21,9 @@ import { EventId, Owner, SessionId, Source, type Trace } from "./traces.ts";
  * - Codex reports `token_count` events with the response's usage and the running
  *   total. Some versions repeat an event, so records are keyed by the running total.
  *   The model comes from the preceding `turn_context`.
+ * - Conductor stores the Claude Agent SDK's messages, which carry the same usage as
+ *   Claude Code's transcript, so they share its key: a response uploaded from both
+ *   counts once.
  */
 
 /** Transcript event names that carry usage, or (Codex) the model for later usage. */
@@ -256,11 +260,13 @@ export const traceUsage = (trace: Trace, codexModel?: string): Usage | undefined
   const extracted =
     trace.source === "claude-code" && trace.event === "assistant"
       ? claudeUsage(trace.raw)
-      : (trace.source === "pi" || trace.source === "omp") && trace.event === "message/assistant"
-        ? piUsage(trace)
-        : trace.source === "codex" && trace.event === "event_msg/token_count"
-          ? codexUsage(trace, codexModel)
-          : undefined;
+      : trace.source === "conductor" && trace.event === "assistant"
+        ? claudeUsage(conductorMessage(trace.raw))
+        : (trace.source === "pi" || trace.source === "omp") && trace.event === "message/assistant"
+          ? piUsage(trace)
+          : trace.source === "codex" && trace.event === "event_msg/token_count"
+            ? codexUsage(trace, codexModel)
+            : undefined;
   if (!extracted || total(extracted) === 0) return undefined;
   const { key, model, ...tokens } = extracted;
   return {

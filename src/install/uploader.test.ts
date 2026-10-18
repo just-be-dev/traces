@@ -1,4 +1,5 @@
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
 import {
   appendFileSync,
   existsSync,
@@ -13,9 +14,12 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  type ConductorOptions,
+  conductorCursorPath,
   cursorPathFor,
   deriveSession,
   extractMetadata,
+  importConductor,
   listSessionFiles,
   MAX_BATCH_ENTRIES,
   MAX_LINE_BYTES,
@@ -607,4 +611,203 @@ test("the hook exits at once, silently, and uploads in the background", async ()
   expect(unconfigured).toMatchObject({ code: 0, stdout: "" });
   const garbage = await run(["hook", "codex"], "not json");
   expect(garbage).toMatchObject({ code: 0, stdout: "", stderr: "" });
+});
+
+// --- Conductor ---------------------------------------------------------------------
+
+const conductorDb = (name = "conductor.db") => {
+  const path = join(work, name);
+  const db = new Database(path, { create: true });
+  db.run(`CREATE TABLE repos (id TEXT PRIMARY KEY, name TEXT, remote_url TEXT, root_path TEXT,
+    default_branch TEXT, setup_script TEXT)`);
+  db.run(`CREATE TABLE workspaces (id TEXT PRIMARY KEY, repository_id TEXT, directory_name TEXT,
+    workspace_path TEXT, branch TEXT, notes TEXT)`);
+  db.run(`CREATE TABLE sessions (id TEXT PRIMARY KEY, status TEXT, claude_session_id TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')), workspace_id TEXT, agent_type, title TEXT)`);
+  db.run(`CREATE TABLE session_messages (id TEXT PRIMARY KEY, session_id TEXT, role TEXT,
+    content TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')), sent_at TEXT,
+    full_message TEXT, model TEXT, turn_id TEXT)`);
+  db.run(
+    "INSERT INTO repos VALUES ('r1', 'app', 'git@x:app.git', '/code/app', 'main', 'export SECRET=1')",
+  );
+  db.run("INSERT INTO workspaces VALUES ('w1', 'r1', 'oslo', '/ws/oslo', 'feat', 'private notes')");
+  db.run(
+    "INSERT INTO sessions VALUES ('s-old', 'idle', 'sdk-old', '2025-09-14 02:22:43', NULL, 'claude', 'Old')",
+  );
+  db.run(
+    "INSERT INTO sessions VALUES ('s-new', 'idle', 'sdk-new', '2026-06-28 22:04:37', 'w1', 'claude', 'New')",
+  );
+  return { path, db };
+};
+
+const message = (
+  db: Database,
+  id: string,
+  session: string,
+  role: string,
+  content: string,
+  createdAt = "2026-06-28T22:04:39.846Z",
+) =>
+  db.run(
+    "INSERT INTO session_messages (id, session_id, role, content, created_at) VALUES (?, ?, ?, ?, ?)",
+    [id, session, role, content, createdAt],
+  );
+
+const sdk = (value: unknown) => JSON.stringify(value);
+
+const conductorOptions = (database: string): ConductorOptions => ({
+  home,
+  env: {},
+  database,
+  retryDelaysMs: [1, 1, 1],
+  lockPollMs: 5,
+});
+
+const conductorCursor = (database: string) =>
+  JSON.parse(readFileSync(conductorCursorPath(home, database), "utf8")) as {
+    sessions: Record<string, number>;
+    uploadedBytes: number;
+  };
+
+test("imports Conductor sessions newest first: a header, then every message row", async () => {
+  const { path, db } = conductorDb();
+  message(db, "m1", "s-old", "user", "Set up dbos", "2025-09-14 02:32:19");
+  message(db, "m2", "s-old", "assistant", sdk({ type: "system", subtype: "init", cwd: "/old" }));
+  message(db, "m3", "s-new", "user", "Create a PR");
+  message(db, "m4", "s-new", "assistant", sdk({ type: "assistant", message: { id: "msg_1" } }));
+  message(db, "m5", "s-new", "assistant", '{"type":');
+
+  const first = await importConductor(conductorOptions(path));
+  expect(first).toMatchObject({ outcome: "uploaded", sent: 7, sessions: 2 });
+  expect(received.map((r) => r.body.session)).toEqual([
+    { id: "s-new", stream: "s-new", cwd: "/ws/oslo" },
+    // No workspace: the cwd comes from the SDK's init message.
+    { id: "s-old", stream: "s-old", cwd: "/old" },
+  ]);
+  expect(received[0]?.body.client).toMatchObject({
+    harness: "conductor",
+    uploaderVersion: "0.1.0",
+  });
+  expect(received[0]?.body.client.harnessVersion).toBeUndefined();
+  const [header, prompt, reply, broken] = received[0]?.body.entries ?? [];
+  expect(header).toEqual({
+    offset: 0,
+    raw: {
+      type: "session",
+      session: {
+        id: "s-new",
+        status: "idle",
+        claude_session_id: "sdk-new",
+        created_at: "2026-06-28 22:04:37",
+        workspace_id: "w1",
+        agent_type: "claude",
+        title: "New",
+      },
+      // Only the listed columns: scripts and notes stay local.
+      workspace: { id: "w1", directory_name: "oslo", workspace_path: "/ws/oslo", branch: "feat" },
+      repo: {
+        id: "r1",
+        name: "app",
+        remote_url: "git@x:app.git",
+        root_path: "/code/app",
+        default_branch: "main",
+      },
+    },
+  });
+  expect(prompt?.raw).toMatchObject({ id: "m3", role: "user", content: "Create a PR" });
+  expect(reply?.raw).toMatchObject({
+    id: "m4",
+    role: "assistant",
+    content: { type: "assistant", message: { id: "msg_1" } },
+    full_message: null,
+  });
+  expect(broken?.raw).toMatchObject({ id: "m5", content: '{"type":' });
+  expect(prompt?.raw).not.toHaveProperty("rowid");
+  expect(conductorCursor(path).sessions).toEqual({ "s-new": 5, "s-old": 2 });
+
+  // Nothing new, nothing sent; then only the new row, without another header.
+  received = [];
+  expect(await importConductor(conductorOptions(path))).toMatchObject({
+    outcome: "unchanged",
+    sent: 0,
+  });
+  expect(received).toHaveLength(0);
+  message(db, "m6", "s-old", "user", "Thanks");
+  expect(await importConductor(conductorOptions(path))).toMatchObject({ sent: 1, sessions: 1 });
+  expect(sentRaw()).toEqual([expect.objectContaining({ id: "m6", content: "Thanks" })]);
+  db.close();
+});
+
+test("a failed Conductor upload keeps the session's cursor; oversize rows are skipped", async () => {
+  const { path, db } = conductorDb();
+  message(db, "m1", "s-new", "user", "x".repeat(MAX_LINE_BYTES + 10));
+  message(db, "m2", "s-new", "user", "small");
+  respond = () => new Response("unavailable", { status: 503 });
+  expect(await importConductor(conductorOptions(path))).toMatchObject({ outcome: "failed" });
+  expect(existsSync(conductorCursorPath(home, path))).toBe(false);
+
+  received = [];
+  respond = accept;
+  expect(await importConductor(conductorOptions(path))).toMatchObject({
+    outcome: "uploaded",
+    sent: 2,
+    skipped: 1,
+  });
+  expect(
+    sentRaw().map(
+      (raw) => (raw as { type?: string; id?: string }).type ?? (raw as { id: string }).id,
+    ),
+  ).toEqual(["session", "m2"]);
+  expect(conductorCursor(path).sessions).toEqual({ "s-new": 2 });
+  expect(readFileSync(join(home, "upload.log"), "utf8")).toContain(
+    "skipped oversize entry offset=1",
+  );
+  db.close();
+});
+
+test("a recreated Conductor database starts its sessions over", async () => {
+  const { path, db } = conductorDb();
+  message(db, "m1", "s-new", "user", "one");
+  await importConductor(conductorOptions(path));
+  writeFileSync(
+    conductorCursorPath(home, path),
+    JSON.stringify({ path, sessions: { "s-new": 99 }, uploadedBytes: 0 }),
+  );
+  received = [];
+  // The server dedups what it already has, header included.
+  expect(await importConductor(conductorOptions(path))).toMatchObject({ sent: 2 });
+  expect(sentRaw()).toEqual([
+    expect.objectContaining({ type: "session" }),
+    expect.objectContaining({ id: "m1" }),
+  ]);
+  expect(conductorCursor(path).sessions).toEqual({ "s-new": 1 });
+  db.close();
+});
+
+test("a missing Conductor database is not an error", async () => {
+  expect(await importConductor(conductorOptions(join(work, "none.db")))).toMatchObject({
+    outcome: "missing",
+    sent: 0,
+  });
+  expect(received).toHaveLength(0);
+});
+
+test.skipIf(!Bun.which("node"))("sync conductor also runs under Node's SQLite", async () => {
+  const { path, db } = conductorDb();
+  message(db, "m1", "s-new", "user", "hello");
+  db.close();
+  const child = Bun.spawn(["node", SCRIPT, "sync", "conductor"], {
+    env: { ...process.env, TRACES_HOME: home, CONDUCTOR_DB: path },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  expect(await child.exited).toBe(0);
+  const output =
+    (await new Response(child.stderr).text()) + (await new Response(child.stdout).text());
+  expect(output).toContain("sync conductor uploaded: 1 sessions, entries sent=2");
+  expect(output).not.toContain(TOKEN);
+  expect(sentRaw()).toEqual([
+    expect.objectContaining({ type: "session" }),
+    expect.objectContaining({ id: "m1", content: "hello" }),
+  ]);
 });

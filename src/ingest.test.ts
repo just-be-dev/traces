@@ -8,6 +8,8 @@ import {
   entryEvent,
   entryKey,
   entryTools,
+  entryTrace,
+  type IngestBatch,
   ingestBatch,
   SessionStore,
   UploaderId,
@@ -72,6 +74,67 @@ test("entry events and tool names follow each harness's transcript shape", () =>
   expect(entryEvent("omp", piToolResult)).toBe("message/toolResult");
   expect(entryTools("omp", piToolResult)).toEqual(["bash"]);
   expect(entryTools("claude-code", { message: { content: "plain" } })).toEqual([]);
+});
+
+// Conductor rows: a session header, a user prompt, and Claude Agent SDK messages.
+const conductorHeader = {
+  type: "session",
+  session: { id: "cs-1", agent_type: "claude", title: "T", created_at: "2025-09-14 02:22:43" },
+  workspace: { id: "w-1", workspace_path: "/w" },
+};
+const conductorPrompt = {
+  id: "row-1",
+  session_id: "cs-1",
+  role: "user",
+  content: "Create a PR",
+  created_at: "2025-09-14 02:32:19",
+};
+const conductorRow = (id: string, content: unknown) => ({
+  id,
+  session_id: "cs-1",
+  role: "assistant",
+  content,
+  created_at: "2026-06-28T22:04:39.846Z",
+});
+const conductorToolUse = conductorRow("row-2", { ...claudeToolUse, session_id: "sdk-1" });
+const conductorInit = conductorRow("row-3", { type: "system", subtype: "init", cwd: "/w" });
+
+test("Conductor rows are keyed by row ID and mapped from the SDK message they carry", () => {
+  expect(entryKey("conductor", conductorHeader, 0)).toBe("session");
+  expect(entryKey("conductor", conductorPrompt, 5)).toBe("row-1");
+  expect(entryKey("conductor", conductorToolUse, 6)).toBe("row-2");
+  expect(entryKey("conductor", { role: "user" }, 7)).toBe("@7");
+  // A row whose own type field happens to say "session" is not the header.
+  expect(entryKey("conductor", { ...conductorPrompt, type: "session" }, 5)).toBe("row-1");
+  expect(entryEvent("conductor", conductorHeader)).toBe("session");
+  expect(entryEvent("conductor", conductorPrompt)).toBe("user");
+  expect(entryEvent("conductor", conductorToolUse)).toBe("assistant");
+  expect(entryEvent("conductor", conductorInit)).toBe("system/init");
+  // Content that didn't parse stays a string; the row's role still names it.
+  expect(entryEvent("conductor", conductorRow("row-4", '{"type":'))).toBe("assistant");
+  expect(entryTools("conductor", conductorToolUse)).toEqual(["Read", "Grep"]);
+  expect(entryTools("conductor", conductorPrompt)).toEqual([]);
+  expect(entryTools("conductor", conductorHeader)).toEqual([]);
+});
+
+test("Conductor traces take the row's creation time, reading SQLite's format as UTC", () => {
+  const batch: IngestBatch = {
+    client: { harness: "conductor", uploaderVersion: "1" },
+    session: { id: "cs-1", stream: "cs-1" },
+    entries: [conductorHeader, conductorPrompt, conductorToolUse, { role: "user" }].map(
+      (raw, offset) => ({ offset, raw: raw as IngestBatch["entries"][number]["raw"] }),
+    ),
+  };
+  const traces = batch.entries.map((entry) =>
+    entryTrace(Owner.make("owner"), batch, entry, "2026-10-01T00:00:00.000Z"),
+  );
+  expect(traces.map((trace) => [trace.id, trace.occurredAt, trace.summary])).toEqual([
+    ["conductor:cs-1:session", "2025-09-14T02:22:43.000Z", "session"],
+    ["conductor:cs-1:row-1", "2025-09-14T02:32:19.000Z", "user"],
+    ["conductor:cs-1:row-2", "2026-06-28T22:04:39.846Z", "Read, Grep"],
+    ["conductor:cs-1:@3", "2026-10-01T00:00:00.000Z", "user"],
+  ]);
+  expect(traces[2]?.raw as unknown).toEqual(conductorToolUse);
 });
 
 const owner = Owner.make("owner");

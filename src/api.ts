@@ -195,7 +195,7 @@ const tools = [
     inputSchema: {
       type: "object",
       properties: {
-        harness: { type: "string", enum: ["claude-code", "codex", "pi", "omp"] },
+        harness: { type: "string", enum: ["claude-code", "codex", "pi", "omp", "conductor"] },
         label: { type: "string", description: "e.g. '<hostname> <harness>'", maxLength: 100 },
       },
       required: ["harness"],

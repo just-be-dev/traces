@@ -172,5 +172,6 @@ export const SOURCE_NAMES: Record<string, string> = {
   codex: "Codex",
   pi: "pi",
   omp: "omp",
+  conductor: "Conductor",
   amp: "Amp",
 };

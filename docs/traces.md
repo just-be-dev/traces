@@ -57,15 +57,18 @@ The sync and the turn-end uploads share cursors and per-file locks, so they can 
 
 The uploader never writes to stdout in hook mode, always exits 0, and detaches its upload, so it never delays a turn. Entries over 1 MB are skipped and logged locally by offset. On a network error, 429, or 5xx it retries and leaves the cursor in place. On 401 it stops. If the server rejects a batch with 400, 413, or 422, it splits the batch and skips any single entry that is still rejected. Local logs (`~/.traces/upload.log`, `sync.log`) hold file names, offsets, counts, and statuses only.
 
-| Agent       | Turn trigger                                                        | Backfill source                                      |
-| ----------- | ------------------------------------------------------------------- | ---------------------------------------------------- |
-| Claude Code | `Stop`, `SubagentStop`, `SessionEnd` hooks (`transcript_path`)      | `~/.claude/projects/**/*.jsonl`, including subagents |
-| Codex       | `Stop`, `SubagentStop` hooks; new hooks must be trusted in `/hooks` | `~/.codex/sessions`, `~/.codex/archived_sessions`    |
-| pi          | Extension: `agent_settled`, `session_shutdown`                      | `~/.pi/agent/sessions/**/*.jsonl`                    |
-| omp         | None yet; backfill with `traces.ts sync omp`                        | `~/.omp/agent/sessions/**/*.jsonl`, incl. subagents  |
-| Amp         | None verified                                                       | MCP search only                                      |
+| Agent       | Turn trigger                                                        | Backfill source                                                |
+| ----------- | ------------------------------------------------------------------- | -------------------------------------------------------------- |
+| Claude Code | `Stop`, `SubagentStop`, `SessionEnd` hooks (`transcript_path`)      | `~/.claude/projects/**/*.jsonl`, including subagents           |
+| Codex       | `Stop`, `SubagentStop` hooks; new hooks must be trusted in `/hooks` | `~/.codex/sessions`, `~/.codex/archived_sessions`              |
+| pi          | Extension: `agent_settled`, `session_shutdown`                      | `~/.pi/agent/sessions/**/*.jsonl`                              |
+| omp         | None yet; backfill with `traces.ts sync omp`                        | `~/.omp/agent/sessions/**/*.jsonl`, incl. subagents            |
+| Conductor   | None; import with `traces.ts sync conductor`                        | `~/Library/Application Support/com.conductor.app/conductor.db` |
+| Amp         | None verified                                                       | MCP search only                                                |
 
 omp ([oh-my-pi](https://github.com/can1357/oh-my-pi)) is a pi fork with the same entry format, so its traces are keyed and mapped like pi's under their own `omp` harness. Its subagent transcripts live in the session's artifacts directory (`<timestamp>_<uuid>/<Agent>.jsonl`) and become streams of the parent session. omp keeps a fixed-size title slot on the first line and overwrites it in place, so for omp the uploader identifies a file by the line after the slot (the session header); the slot itself is stored once, as first uploaded. There is no omp turn-end trigger yet, so new omp sessions need another `sync omp`.
+
+[Conductor](https://conductor.build) runs Claude Code and Codex through their SDKs and keeps the conversations in its own SQLite database, not in transcript files. The Claude Code transcripts it started are usually pruned from `~/.claude` long before, so the database can be the only copy. `traces.ts sync conductor` (also part of `sync all`) opens it read-only with the runtime's SQLite (`bun:sqlite`, or `node:sqlite` on Node) and uploads it under the `conductor` harness, one stream per Conductor session, most recently active first. Each `session_messages` row becomes one trace keyed by its row ID. `raw` is the row as stored, except that an agent row's `content`, a Claude Agent SDK message in JSON, is parsed; user prompts stay text. Each session opens with a `session` entry (key `session`) holding the session row plus selected workspace and repository columns. Setup scripts, notes, and environment variables stay local. `event` is the SDK message's `type`, refined by its `subtype` (for example `system/init`), or `user` for a prompt. `occurredAt` is the row's `created_at`, where older rows' SQLite `datetime('now')` values are read as UTC. The cursor is the last uploaded rowid per session, kept in `~/.traces/state/conductor/`. A session whose rows fall below its cursor (a recreated database) starts over, and the server dedups what it already has. As with transcripts, the first payload wins, so a row Conductor later updates (a queued prompt that's sent, say) keeps its first upload. Set `CONDUCTOR_DB` to import another copy of the database. There is no turn-end trigger, so new Conductor sessions need another `sync conductor`.
 
 ## Storage and risk
 
@@ -97,6 +100,7 @@ Usage is projected from stored transcript entries into `usage_records` (migratio
 
 - **Claude Code:** keyed by the API message ID. The harness repeats usage on every content-block entry, and resumed sessions copy history into a new file.
 - **pi and omp:** keyed by provider and response ID, or the request timestamp when there's no response ID.
+- **Conductor:** Claude responses are keyed like Claude Code's, by API message ID, so a response uploaded from both counts once. Conductor's Codex messages carry no usage.
 - **Codex:** keyed by stream and running total, because `token_count` events can repeat. The model comes from the latest `turn_context`, and a record without one inherits the session's latest recorded model.
 
 `inputTokens` excludes cache reads and writes for every harness. Tool counts come from the `summary` projection of tool-call events; names are merged case-insensitively. The records are derived data: to rebuild them, delete `usage_records` and set `usage_sweep.cursor` to 0. A `VACUUM` that renumbers rowids would only cause harmless re-scans.

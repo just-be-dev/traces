@@ -11,6 +11,7 @@ export const Source = Schema.Union([
   Schema.Literal("codex"),
   Schema.Literal("amp"),
   Schema.Literal("omp"),
+  Schema.Literal("conductor"),
 ]);
 export type Source = typeof Source.Type;
 

@@ -131,6 +131,36 @@ test("pi usage is keyed by provider response, falling back to the request timest
   });
 });
 
+test("Conductor's SDK messages count like Claude Code's, once per response across both", () => {
+  const conductorRow = (id: string, content: unknown) => ({
+    id,
+    session_id: "cs-1",
+    role: "assistant",
+    content,
+    created_at: "2026-06-28T22:04:39.846Z",
+  });
+  const sdk = claudeEntry("sdk-uuid", "msg_1", "text", "2026-06-28T22:04:39.846Z");
+  const usage = usageOf(
+    transcript("conductor", [
+      conductorRow("row-1", sdk),
+      conductorRow("row-2", { type: "system", subtype: "init" }),
+      { id: "row-3", session_id: "cs-1", role: "user", content: "hi" },
+      { type: "session", session: { id: "cs-1" } },
+    ]),
+  );
+  expect(usage).toHaveLength(1);
+  expect(usage[0]).toMatchObject({
+    key: "claude-code:msg_1",
+    source: "conductor",
+    model: "claude-opus-5-5",
+    inputTokens: 2,
+    outputTokens: 274,
+    cacheReadTokens: 11586,
+    cacheWriteTokens: 33850,
+    occurredAt: "2026-06-28T22:04:39.846Z",
+  });
+});
+
 test("omp usage is read like pi's, keyed under omp", () => {
   const [usage] = usageOf(transcript("omp", [piAssistant("o1", "resp_1", 1)]));
   expect(usage).toMatchObject({
