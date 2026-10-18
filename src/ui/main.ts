@@ -4,7 +4,6 @@ import { defineTaggedUnion } from "foldkit/schema";
 import { modifyFields } from "foldkit/struct";
 import type * as Update from "foldkit/update";
 import { UsageStats } from "../usage.ts";
-import { Metric } from "./domain/activity.ts";
 import { FetchStats } from "./command.ts";
 import { Message } from "./message.ts";
 import { activityView } from "./view/activity.ts";
@@ -21,7 +20,6 @@ export const StatsState = defineTaggedUnion({
 export type StatsState = typeof StatsState.Type;
 
 export const Model = Schema.Struct({
-  metric: Metric,
   stats: StatsState,
 });
 export type Model = typeof Model.Type;
@@ -29,7 +27,7 @@ export type Model = typeof Model.Type;
 // INIT
 
 export const init = () => ({
-  model: Model.make({ metric: "responses", stats: StatsState.Loading() }),
+  model: Model.make({ stats: StatsState.Loading() }),
   commands: [FetchStats()],
 });
 
@@ -41,7 +39,6 @@ export const update = (model: Model, message: Message) =>
       model: modifyFields(model, { stats: () => StatsState.Loading() }),
       commands: [FetchStats()],
     }),
-    SelectedMetric: ({ metric }) => ({ model: modifyFields(model, { metric: () => metric }) }),
     SucceededFetchStats: ({ stats }) => ({
       model: modifyFields(model, { stats: () => StatsState.Loaded({ stats }) }),
     }),
@@ -67,7 +64,7 @@ export const view = (model: Model, h: HtmlBuilder<Message>): Document => ({
             "mx-auto mt-[2lh] flex w-full max-w-4xl flex-col gap-[2lh] px-[2ch] focus:outline-none",
           ),
         ],
-        [h.h1([h.Class("font-bold")], ["~/traces"]), activityView(model.stats, model.metric, h)],
+        [h.h1([h.Class("font-bold")], ["~/traces"]), activityView(model.stats, h)],
       ),
     ],
   ),

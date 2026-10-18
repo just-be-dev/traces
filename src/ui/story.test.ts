@@ -30,12 +30,3 @@ test("an outage can be retried", () => {
     model((value) => expect(value.stats._tag).toBe("Loaded")),
   );
 });
-
-test("the calendar metric is switchable", () => {
-  story(
-    update,
-    given(init().model),
-    message(Message.SelectedMetric({ metric: "tokens" })),
-    model((value) => expect(value.metric).toBe("tokens")),
-  );
-});

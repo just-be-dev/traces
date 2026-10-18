@@ -11,7 +11,7 @@ import {
 } from "./activity.ts";
 
 test("the calendar has Sunday-first week columns covering exactly the window", () => {
-  const weeks = calendar(stats, "responses");
+  const weeks = calendar(stats);
   expect(weeks.every((week) => week.length === 7)).toBe(true);
   const days = weeks.flat().filter((cell) => cell !== undefined);
   expect(days[0]?.day).toBe(stats.from);
@@ -23,20 +23,21 @@ test("the calendar has Sunday-first week columns covering exactly the window", (
   expect(weeks.at(-1)?.slice(4)).toEqual([undefined, undefined, undefined]);
 });
 
-test("levels rank active days by quartile of the chosen metric", () => {
-  const level = (metric: "responses" | "tokens" | "sessions", day: string) =>
-    calendar(stats, metric)
+test("levels rank active days by quartile of total tokens", () => {
+  const level = (day: string) =>
+    calendar(stats)
       .flat()
       .find((cell) => cell?.day === day)?.level;
-  expect(level("responses", "2026-10-12")).toBe(4);
-  expect(level("responses", "2025-10-09")).toBe(1);
-  expect(level("responses", "2026-10-10")).toBe(0);
-  expect(level("sessions", "2026-10-12")).toBe(4);
-  expect(level("tokens", "2026-10-01")).toBe(2);
+  expect(level("2026-10-12")).toBe(4);
+  expect(level("2026-10-13")).toBe(3);
+  expect(level("2026-10-01")).toBe(2);
+  expect(level("2026-10-11")).toBe(1);
+  expect(level("2025-10-09")).toBe(1);
+  expect(level("2026-10-10")).toBe(0);
 });
 
 test("month labels mark the first full column of each month", () => {
-  const labels = monthLabels(calendar(stats, "responses"));
+  const labels = monthLabels(calendar(stats));
   expect(labels[0]).toEqual({ column: 1, label: "Oct" });
   expect(labels.map((label) => label.label).slice(0, 3)).toEqual(["Oct", "Nov", "Dec"]);
   expect(labels.at(-1)?.label).toBe("Oct");

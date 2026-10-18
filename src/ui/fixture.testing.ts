@@ -33,8 +33,4 @@ export const stats: UsageStats = {
     { source: "codex", responses: 12, sessions: 2, ...tokens(130, 65, 11_200) },
   ],
   sessions: 7,
-  tools: [
-    { tool: "Bash", calls: 120 },
-    { tool: "Read", calls: 80 },
-  ],
 };

@@ -10,7 +10,6 @@ import {
   hourLabel,
   LEVELS,
   longDay,
-  type Metric,
   monthLabels,
   plural,
   SOURCE_NAMES,
@@ -24,11 +23,6 @@ import type { StatsState } from "../main.ts";
 // cards or rounding, spacing in line heights, and inverted hover states.
 
 const LEVEL_CLASSES = ["bg-heat-0", "bg-heat-1", "bg-heat-2", "bg-heat-3", "bg-heat-4"];
-const METRICS: ReadonlyArray<{ readonly metric: Metric; readonly label: string }> = [
-  { metric: "responses", label: "responses" },
-  { metric: "tokens", label: "tokens" },
-  { metric: "sessions", label: "sessions" },
-];
 const WEEKDAY_LABELS = ["", "mon", "", "wed", "", "fri", ""];
 /** Calendar cell size plus gap, in pixels. */
 const PITCH = 15;
@@ -59,11 +53,10 @@ const legend = (h: HtmlBuilder<Message>) =>
 
 const heatmap = (
   stats: Pick<UsageStats, "from" | "to" | "days">,
-  metric: Metric,
   label: string,
   h: HtmlBuilder<Message>,
 ): Html => {
-  const weeks = calendar(stats, metric);
+  const weeks = calendar(stats);
   // A label needs about two columns; one on the last column would be clipped.
   const months = monthLabels(weeks).filter(({ column }) => column < weeks.length - 1);
   // NOTE: On narrow screens the scroll container is right-to-left so it opens on the
@@ -108,28 +101,6 @@ const heatmap = (
     ],
   );
 };
-
-/** Tabs like just-be.dev's nav bar: the selected one is white on the gray bar. */
-const metricToggle = (selected: Metric, h: HtmlBuilder<Message>) =>
-  h.div(
-    [h.Class("inline-flex bg-muted"), h.Role("group"), h.AriaLabel("Color days by")],
-    METRICS.map(({ metric, label }) =>
-      h.button(
-        [
-          h.Type("button"),
-          h.AriaPressed(metric === selected ? "true" : "false"),
-          h.OnClick(Message.SelectedMetric({ metric })),
-          h.Class(
-            cn(
-              "cursor-pointer px-[1ch] transition-[filter] duration-150 hover:invert focus-visible:invert focus-visible:outline-none",
-              metric === selected ? "bg-background font-bold" : "bg-muted",
-            ),
-          ),
-        ],
-        [label],
-      ),
-    ),
-  );
 
 const sectionHeading = (title: string, h: HtmlBuilder<Message>) =>
   h.h2([h.Class("mb-[1lh] font-bold")], [title]);
@@ -226,26 +197,17 @@ const hoursChart = (hours: ReadonlyArray<number>, h: HtmlBuilder<Message>): Html
   );
 };
 
-const loadedView = (stats: UsageStats, metric: Metric, h: HtmlBuilder<Message>): Html => {
+const loadedView = (stats: UsageStats, h: HtmlBuilder<Message>): Html => {
   const summary = summarize(stats);
-  const label = `${plural(summary.responses, "model response")} on ${plural(summary.activeDays, "day")} between ${longDay(stats.from)} and ${longDay(stats.to)}`;
+  const label = `${compact(summary.tokens)} tokens on ${plural(summary.activeDays, "day")} between ${longDay(stats.from)} and ${longDay(stats.to)}`;
   return h.div(
     [h.Class("flex flex-col gap-[2lh]")],
     [
       h.section(
         [h.AriaLabel("Activity")],
         [
-          h.div(
-            [h.Class("mb-[1lh] flex flex-wrap items-center justify-between gap-x-[2ch]")],
-            [
-              h.h2(
-                [h.Class("font-bold")],
-                [`${plural(summary.responses, "model response")} in the last year`],
-              ),
-              metricToggle(metric, h),
-            ],
-          ),
-          heatmap(stats, metric, label, h),
+          sectionHeading(`${compact(summary.tokens)} tokens in the last year`, h),
+          heatmap(stats, label, h),
           h.div(
             [
               h.Class(
@@ -257,7 +219,7 @@ const loadedView = (stats: UsageStats, metric: Metric, h: HtmlBuilder<Message>):
                 [],
                 [
                   summary.busiest
-                    ? `Busiest day: ${longDay(summary.busiest.day)}, ${plural(summary.busiest.responses, "response")}`
+                    ? `Busiest day: ${longDay(summary.busiest.day)}, ${compact(totalTokens(summary.busiest))} tokens`
                     : "No activity yet.",
                 ],
               ),
@@ -321,24 +283,7 @@ const loadedView = (stats: UsageStats, metric: Metric, h: HtmlBuilder<Message>):
         "No harnesses yet.",
         h,
       ),
-      h.div(
-        [h.Class("grid gap-[2lh] md:grid-cols-2 md:gap-x-[4ch]")],
-        [
-          barList(
-            "Top tools",
-            stats.tools.map((tool) => ({
-              key: tool.tool,
-              label: tool.tool,
-              detail: "",
-              value: tool.calls,
-              display: compact(tool.calls),
-            })),
-            "No tool calls yet.",
-            h,
-          ),
-          hoursChart(stats.hours, h),
-        ],
-      ),
+      hoursChart(stats.hours, h),
     ],
   );
 };
@@ -349,14 +294,14 @@ const PLACEHOLDER_WINDOW = { from: "2025-10-12", to: "2026-10-17", days: [] };
 const placeholder = (h: HtmlBuilder<Message>) =>
   h.div(
     [h.Class("pointer-events-none mt-[1lh]"), h.AriaHidden(true)],
-    [heatmap(PLACEHOLDER_WINDOW, "responses", "No activity", h)],
+    [heatmap(PLACEHOLDER_WINDOW, "No activity", h)],
   );
 
-export const activityView = (state: StatsState, metric: Metric, h: HtmlBuilder<Message>): Html =>
+export const activityView = (state: StatsState, h: HtmlBuilder<Message>): Html =>
   // NOTE: Matched by tag rather than through StatsState.match, which would import
   // main.ts at runtime and create a cycle.
   state._tag === "Loaded"
-    ? loadedView(state.stats, metric, h)
+    ? loadedView(state.stats, h)
     : state._tag === "Unavailable"
       ? h.section(
           [h.AriaLabel("Activity")],

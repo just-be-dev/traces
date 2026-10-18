@@ -1,11 +1,6 @@
 import * as Array from "effect/Array";
 import * as Result from "effect/Result";
-import * as Schema from "effect/Schema";
 import type { DayActivity, Tokens, UsageStats } from "../../usage.ts";
-
-/** What the activity calendar colors each day by. */
-export const Metric = Schema.Literals(["responses", "tokens", "sessions"]);
-export type Metric = typeof Metric.Type;
 
 export const LEVELS = 5;
 
@@ -25,13 +20,6 @@ const dayAt = (ms: number) => new Date(ms).toISOString().slice(0, 10);
 export const totalTokens = (tokens: Tokens) =>
   tokens.inputTokens + tokens.outputTokens + tokens.cacheReadTokens + tokens.cacheWriteTokens;
 
-export const metricValue = (activity: DayActivity, metric: Metric) =>
-  metric === "responses"
-    ? activity.responses
-    : metric === "sessions"
-      ? activity.sessions
-      : totalTokens(activity);
-
 /** Upper bounds of levels 1–3 over the active days' values; above the last is level 4. */
 const thresholds = (values: ReadonlyArray<number>) => {
   const sorted = [...values].sort((a, b) => a - b);
@@ -44,15 +32,15 @@ const levelOf = (value: number, bounds: ReadonlyArray<number>) =>
   value <= 0 ? 0 : 1 + bounds.filter((bound) => value > bound).length;
 
 /**
- * Weeks of the window as calendar columns, Sunday first, like GitHub. Days of the
- * first and last weeks outside the window are `undefined`.
+ * Weeks of the window as calendar columns, Sunday first, like GitHub, with each day
+ * leveled by its total tokens. Days of the first and last weeks outside the window
+ * are `undefined`.
  */
 export const calendar = (
   stats: Pick<UsageStats, "from" | "to" | "days">,
-  metric: Metric,
 ): ReadonlyArray<ReadonlyArray<Cell | undefined>> => {
   const byDay = new Map(stats.days.map((activity) => [activity.day, activity]));
-  const bounds = thresholds(stats.days.map((activity) => metricValue(activity, metric)));
+  const bounds = thresholds(stats.days.map(totalTokens));
   const start = dayMs(stats.from) - new Date(dayMs(stats.from)).getUTCDay() * MS_PER_DAY;
   const end = dayMs(stats.to);
   const weeks = Math.floor((end - start) / MS_PER_DAY / 7) + 1;
@@ -62,7 +50,7 @@ export const calendar = (
       if (ms < dayMs(stats.from) || ms > end) return undefined;
       const day = dayAt(ms);
       const activity = byDay.get(day);
-      const value = activity ? metricValue(activity, metric) : 0;
+      const value = activity ? totalTokens(activity) : 0;
       return { day, activity, value, level: levelOf(value, bounds) };
     }),
   );
@@ -124,6 +112,7 @@ export interface Summary extends Tokens {
   readonly activeDays: number;
   readonly windowDays: number;
   readonly sessions: number;
+  /** The day with the most tokens. */
   readonly busiest: DayActivity | undefined;
   readonly peakHour: number | undefined;
   readonly currentStreak: number;
@@ -141,7 +130,7 @@ export const summarize = (stats: UsageStats): Summary => {
     { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 },
   );
   const busiest = stats.days.reduce<DayActivity | undefined>(
-    (best, day) => (best === undefined || day.responses > best.responses ? day : best),
+    (best, day) => (best === undefined || totalTokens(day) > totalTokens(best) ? day : best),
     undefined,
   );
   const peak = Math.max(0, ...stats.hours);
