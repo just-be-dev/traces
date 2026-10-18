@@ -6,7 +6,7 @@
 //   login --url <origin> --code <claim code>   exchange a one-time claim code for a token
 //   hook <claude-code|codex>                   agent hook: upload this turn in the background
 //   upload <harness> <file...> [--harness-version <v>]
-//   sync <claude-code|codex|pi|all>            backfill every existing session file
+//   sync <claude-code|codex|pi|omp|all>        backfill every existing session file
 //   status                                     show login and upload progress
 //
 // It never prints or logs tokens or payload contents. Logs hold file basenames,
@@ -35,7 +35,7 @@ import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const UPLOADER_VERSION = "0.1.0";
-export const HARNESSES = ["claude-code", "codex", "pi"] as const;
+export const HARNESSES = ["claude-code", "codex", "pi", "omp"] as const;
 export type Harness = (typeof HARNESSES)[number];
 
 /** Lines longer than this many UTF-8 bytes are skipped, not uploaded. */
@@ -206,7 +206,18 @@ export const deriveSession = (harness: Harness, path: string): Session => {
     }
     return { id: name, stream: name };
   }
-  // codex: rollout-<timestamp>-<uuid>.jsonl; pi: <timestamp>_<uuid>.jsonl
+  if (harness === "omp" && !UUID_AT_END.test(name)) {
+    // <sessions>/<project>/<timestamp>_<uuid>.jsonl, and a subagent's transcript in
+    // the session's artifacts directory: <timestamp>_<uuid>/<Agent>.jsonl, possibly
+    // nested under another subagent's (<timestamp>_<uuid>/<Agent>/<Sub>.jsonl).
+    const parts: Array<string> = [name];
+    for (let dir = dirname(path); dir !== dirname(dir); dir = dirname(dir)) {
+      const session = UUID_AT_END.exec(basename(dir))?.[1];
+      if (session) return { id: session, stream: parts.join("/") };
+      parts.unshift(basename(dir));
+    }
+  }
+  // codex: rollout-<timestamp>-<uuid>.jsonl; pi, omp: <timestamp>_<uuid>.jsonl
   const uuid = UUID_AT_END.exec(name)?.[1];
   const id = uuid ?? name;
   return { id, stream: id };
@@ -229,6 +240,7 @@ export const extractMetadata = (
       };
     }
     case "pi":
+    case "omp":
       // The header's `version` is the session format, not Pi's version.
       return raw.type === "session" ? { cwd: nonEmptyString(raw.cwd) } : {};
   }
@@ -238,6 +250,7 @@ const VERSION_BINARIES: Record<Harness, string> = {
   "claude-code": "claude",
   codex: "codex",
   pi: "pi",
+  omp: "omp",
 };
 
 /** `<harness> --version`, cached for a day, including "not installed". */
@@ -333,11 +346,32 @@ function* completeLines(fd: number, from: number, to: number): Generator<Line> {
   }
 }
 
-/** SHA-256 of the first line, or undefined while the file has no complete line. */
-const firstLineHash = (fd: number, size: number): string | undefined => {
+/**
+ * omp keeps a fixed-size title slot (`{"type":"title",...,"pad":"   "}`) on the first
+ * line and overwrites it in place whenever the title changes.
+ */
+const OMP_TITLE_SLOT = Buffer.from('{"type":"title"');
+
+/** Byte offset of the line that identifies the file: past omp's mutable title slot. */
+const headStart = (harness: Harness, fd: number, size: number): number | undefined => {
+  if (harness !== "omp") return 0;
+  const prefix = Buffer.alloc(OMP_TITLE_SLOT.length);
+  const read = readSync(fd, prefix, 0, Math.min(prefix.length, size), 0);
+  if (read < prefix.length || !prefix.equals(OMP_TITLE_SLOT)) return 0;
+  for (const line of completeLines(fd, 0, size)) return line.end;
+  return undefined;
+};
+
+/**
+ * SHA-256 of the file's identifying first line, or undefined while the file has no
+ * complete one.
+ */
+const firstLineHash = (harness: Harness, fd: number, size: number): string | undefined => {
+  const start = headStart(harness, fd, size);
+  if (start === undefined) return undefined;
   const hash = createHash("sha256");
   const buffer = Buffer.allocUnsafe(64 * 1024);
-  let position = 0;
+  let position = start;
   while (position < size) {
     const read = readSync(fd, buffer, 0, Math.min(buffer.length, size - position), position);
     if (read <= 0) return undefined;
@@ -750,7 +784,7 @@ const uploadOnce = async (
       return result("missing");
     }
     const size = fstatSync(fd).size;
-    const head = firstLineHash(fd, size);
+    const head = firstLineHash(harness, fd, size);
     if (head === undefined) return result("unchanged");
     const real = canonicalPath(path);
     let cursor = readCursor(cursorPath, real);
@@ -884,6 +918,9 @@ const harnessRoots = (harness: Harness, env: Env): Array<string> => {
     }
     case "pi":
       return [join(env.PI_CODING_AGENT_DIR || join(home, ".pi", "agent"), "sessions")];
+    case "omp":
+      // omp also honors PI_CODING_AGENT_DIR, but a set one most likely points at pi's.
+      return [join(home, ".omp", "agent", "sessions")];
   }
 };
 
@@ -923,8 +960,8 @@ const isHarness = (value: string | undefined): value is Harness =>
 const usage = `usage:
   traces login --url <origin> --code <claim code>
   traces hook <claude-code|codex>
-  traces upload <claude-code|codex|pi> <file...> [--harness-version <version>]
-  traces sync <claude-code|codex|pi|all>
+  traces upload <claude-code|codex|pi|omp> <file...> [--harness-version <version>]
+  traces sync <claude-code|codex|pi|omp|all>
   traces status`;
 
 const flag = (args: Array<string>, name: string): string | undefined => {

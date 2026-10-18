@@ -62,7 +62,10 @@ The uploader never writes to stdout in hook mode, always exits 0, and detaches i
 | Claude Code | `Stop`, `SubagentStop`, `SessionEnd` hooks (`transcript_path`)      | `~/.claude/projects/**/*.jsonl`, including subagents |
 | Codex       | `Stop`, `SubagentStop` hooks; new hooks must be trusted in `/hooks` | `~/.codex/sessions`, `~/.codex/archived_sessions`    |
 | pi          | Extension: `agent_settled`, `session_shutdown`                      | `~/.pi/agent/sessions/**/*.jsonl`                    |
+| omp         | None yet; backfill with `traces.ts sync omp`                        | `~/.omp/agent/sessions/**/*.jsonl`, incl. subagents  |
 | Amp         | None verified                                                       | MCP search only                                      |
+
+omp ([oh-my-pi](https://github.com/can1357/oh-my-pi)) is a pi fork with the same entry format, so its traces are keyed and mapped like pi's under their own `omp` harness. Its subagent transcripts live in the session's artifacts directory (`<timestamp>_<uuid>/<Agent>.jsonl`) and become streams of the parent session. omp keeps a fixed-size title slot on the first line and overwrites it in place, so for omp the uploader identifies a file by the line after the slot (the session header); the slot itself is stored once, as first uploaded. There is no omp turn-end trigger yet, so new omp sessions need another `sync omp`.
 
 ## Storage and risk
 
@@ -93,7 +96,7 @@ Stats are served from a snapshot, one row per owner in `usage_snapshots`, so vis
 Usage is projected from stored transcript entries into `usage_records` (migration `0004`) by a per-minute sweep (`recordPendingUsage` in `src/usage.ts`). It shares the cron with the content-index sweep. The sweep walks `events` by rowid from a cursor in `usage_sweep`, at most 500 rows or 8 MB per run, so existing traces are backfilled after deploy. Each run writes its records and advances the cursor in one transaction, and the cursor never moves backwards. Records are keyed per model response, and the first write wins:
 
 - **Claude Code:** keyed by the API message ID. The harness repeats usage on every content-block entry, and resumed sessions copy history into a new file.
-- **pi:** keyed by provider and response ID, or the request timestamp when there's no response ID.
+- **pi and omp:** keyed by provider and response ID, or the request timestamp when there's no response ID.
 - **Codex:** keyed by stream and running total, because `token_count` events can repeat. The model comes from the latest `turn_context`, and a record without one inherits the session's latest recorded model.
 
 `inputTokens` excludes cache reads and writes for every harness. Tool counts come from the `summary` projection of tool-call events; names are merged case-insensitively. The records are derived data: to rebuild them, delete `usage_records` and set `usage_sweep.cursor` to 0. A `VACUUM` that renumbers rowids would only cause harmless re-scans.

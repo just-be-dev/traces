@@ -52,6 +52,8 @@ test("entry keys prefer each harness's own entry ID and fall back to the byte of
   expect(entryKey("codex", { type: "session_meta", ordinal: "7" }, 10)).toBe("@10");
   expect(entryKey("pi", piToolCall, 10)).toBe("p-1");
   expect(entryKey("pi", [1, 2], 10)).toBe("@10");
+  expect(entryKey("omp", piToolCall, 10)).toBe("p-1");
+  expect(entryKey("omp", { type: "title", title: "t", pad: "  " }, 0)).toBe("@0");
 });
 
 test("entry events and tool names follow each harness's transcript shape", () => {
@@ -64,6 +66,11 @@ test("entry events and tool names follow each harness's transcript shape", () =>
   expect(entryEvent("pi", piToolResult)).toBe("message/toolResult");
   expect(entryTools("pi", piToolResult)).toEqual(["bash"]);
   expect(entryEvent("pi", "not an object")).toBe("entry");
+  // omp, a pi fork, writes the same entry shapes.
+  expect(entryEvent("omp", piToolCall)).toBe("message/assistant");
+  expect(entryTools("omp", piToolCall)).toEqual(["bash"]);
+  expect(entryEvent("omp", piToolResult)).toBe("message/toolResult");
+  expect(entryTools("omp", piToolResult)).toEqual(["bash"]);
   expect(entryTools("claude-code", { message: { content: "plain" } })).toEqual([]);
 });
 

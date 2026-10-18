@@ -31,8 +31,11 @@ import {
 const Bounded = (max: number) =>
   Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(max));
 
-export const Harness = Schema.Literals(["claude-code", "codex", "pi"]);
+export const Harness = Schema.Literals(["claude-code", "codex", "pi", "omp"]);
 export type Harness = typeof Harness.Type;
+
+/** pi and its fork omp (oh-my-pi) share the session entry format. */
+const isPiFamily = (harness: Harness) => harness === "pi" || harness === "omp";
 
 export const UploaderId = Schema.String.check(Schema.isPattern(/^upl_[0-9a-f]{16}$/)).pipe(
   Schema.brand("UploaderId"),
@@ -431,7 +434,7 @@ export const entryKey = (harness: Harness, raw: unknown, offset: number): string
   const key =
     harness === "claude-code"
       ? text(entry?.uuid)
-      : harness === "pi"
+      : isPiFamily(harness)
         ? text(entry?.id)
         : typeof entry?.ordinal === "number" && Number.isSafeInteger(entry.ordinal)
           ? `#${entry.ordinal}`
@@ -446,7 +449,7 @@ export const entryEvent = (harness: Harness, raw: unknown): string => {
   const detail =
     harness === "codex"
       ? text(fields(entry?.payload)?.type)
-      : harness === "pi"
+      : isPiFamily(harness)
         ? text(fields(entry?.message)?.role)
         : undefined;
   return detail ? `${type}/${detail}` : type;
@@ -463,7 +466,7 @@ export const entryTools = (harness: Harness, raw: unknown): ReadonlyArray<string
     for (const item of items(message?.content)) {
       if (item?.type === "tool_use" || item?.type === "toolCall") names.push(text(item.name));
     }
-    if (harness === "pi") names.push(text(message?.toolName));
+    if (isPiFamily(harness)) names.push(text(message?.toolName));
   }
   return [...new Set(names.filter((name) => name !== undefined))];
 };

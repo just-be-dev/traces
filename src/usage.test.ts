@@ -131,6 +131,17 @@ test("pi usage is keyed by provider response, falling back to the request timest
   });
 });
 
+test("omp usage is read like pi's, keyed under omp", () => {
+  const [usage] = usageOf(transcript("omp", [piAssistant("o1", "resp_1", 1)]));
+  expect(usage).toMatchObject({
+    key: "omp:pi-sub-anthropic:resp_1",
+    source: "omp",
+    model: "claude-opus-5-5",
+    inputTokens: 11658,
+    cacheReadTokens: 26851,
+  });
+});
+
 test("Codex usage takes the turn's model, excludes cached input, and dedups repeated counts", () => {
   const usage = usageOf(
     transcript("codex", [

@@ -182,5 +182,6 @@ export const SOURCE_NAMES: Record<string, string> = {
   "claude-code": "Claude Code",
   codex: "Codex",
   pi: "pi",
+  omp: "omp",
   amp: "Amp",
 };

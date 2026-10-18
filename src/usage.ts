@@ -23,7 +23,7 @@ import {
  * - Claude Code writes one entry per content block, each repeating the message's
  *   usage, so records are keyed by the API message ID. That also dedups history a
  *   resumed or forked session copies into its new file.
- * - pi reports usage on each assistant message, keyed by the provider's response
+ * - pi (and its fork omp) reports usage on each assistant message, keyed by the provider's response
  *   ID (or the request timestamp) so forked sessions don't count twice.
  * - Codex reports `token_count` events with the response's usage and the running
  *   total. Some versions repeat an event, so records are keyed by the running total.
@@ -230,7 +230,7 @@ const piUsage = (trace: Trace): Extracted | undefined => {
     text(message?.responseId) ??
     (typeof message?.timestamp === "number" ? String(message.timestamp) : undefined);
   return {
-    key: response ? `pi:${provider ?? ""}:${response}` : `pi:${trace.id}`,
+    key: response ? `${trace.source}:${provider ?? ""}:${response}` : `${trace.source}:${trace.id}`,
     model,
     inputTokens: count(usage.input),
     outputTokens: count(usage.output),
@@ -268,7 +268,7 @@ export const traceUsage = (trace: Trace, codexModel?: string): Usage | undefined
   const extracted =
     trace.source === "claude-code" && trace.event === "assistant"
       ? claudeUsage(trace.raw)
-      : trace.source === "pi" && trace.event === "message/assistant"
+      : (trace.source === "pi" || trace.source === "omp") && trace.event === "message/assistant"
         ? piUsage(trace)
         : trace.source === "codex" && trace.event === "event_msg/token_count"
           ? codexUsage(trace, codexModel)

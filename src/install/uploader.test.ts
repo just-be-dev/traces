@@ -112,7 +112,7 @@ const options = (): UploadOptions => ({
 const jsonl = (...values: Array<unknown>) => values.map((v) => `${JSON.stringify(v)}\n`).join("");
 const sentOffsets = () => received.flatMap((r) => r.body.entries.map((e) => e.offset));
 const sentRaw = () => received.flatMap((r) => r.body.entries.map((e) => e.raw));
-const cursorOf = (harness: "claude-code" | "codex" | "pi", file: string) =>
+const cursorOf = (harness: "claude-code" | "codex" | "pi" | "omp", file: string) =>
   JSON.parse(readFileSync(cursorPathFor(home, harness, file), "utf8")) as {
     offset: number;
     head: string;
@@ -139,6 +139,21 @@ test("derives session and stream IDs from each harness's file layout", () => {
   expect(
     deriveSession("pi", `/h/.pi/agent/sessions/--x--/2026-10-13T00-20-06-674Z_${pi}.jsonl`),
   ).toEqual({ id: pi, stream: pi });
+  const omp = "019f6dd1-12fe-7000-9453-58b7c3a789af";
+  const ompSession = `/h/.omp/agent/sessions/-Code-x/2026-07-17T02-04-06-270Z_${omp}`;
+  expect(deriveSession("omp", `${ompSession}.jsonl`)).toEqual({ id: omp, stream: omp });
+  expect(deriveSession("omp", `${ompSession}/IngestionScout.jsonl`)).toEqual({
+    id: omp,
+    stream: "IngestionScout",
+  });
+  expect(deriveSession("omp", `${ompSession}/Planner/Scout.jsonl`)).toEqual({
+    id: omp,
+    stream: "Planner/Scout",
+  });
+  expect(deriveSession("omp", "/tmp/odd-name.jsonl")).toEqual({
+    id: "odd-name",
+    stream: "odd-name",
+  });
   expect(deriveSession("pi", "/tmp/odd-name.jsonl")).toEqual({
     id: "odd-name",
     stream: "odd-name",
@@ -160,6 +175,9 @@ test("reads cwd and harness version where each harness records them", () => {
   expect(extractMetadata("codex", { type: "event_msg", payload: { cwd: "/b" } })).toEqual({});
   expect(extractMetadata("pi", { type: "session", cwd: "/c", version: 3 })).toEqual({
     cwd: "/c",
+  });
+  expect(extractMetadata("omp", { type: "session", cwd: "/d", version: 3 })).toEqual({
+    cwd: "/d",
   });
 });
 
@@ -237,6 +255,33 @@ test("starts over when the first line changes or the file shrinks", async () => 
   writeFileSync(file, jsonl({ n: 10 }));
   await uploadFile("codex", file, options());
   expect(sentRaw()).toEqual([{ n: 10 }]);
+});
+
+test("an omp title slot rewritten in place doesn't restart the file", async () => {
+  const file = join(work, "omp.jsonl");
+  const slot = (title: string) =>
+    jsonl({ type: "title", v: 1, title, updatedAt: "t", pad: " ".repeat(40 - title.length) });
+  const rest = jsonl({ type: "session", id: "s", cwd: "/repo" }, { type: "message", id: "m1" });
+  writeFileSync(file, `${slot("")}${rest}`);
+  expect(await uploadFile("omp", file, options())).toMatchObject({ sent: 3 });
+  expect(received[0]?.body.session.cwd).toBe("/repo");
+
+  // omp overwrites the slot with a same-length line when the title changes.
+  received = [];
+  writeFileSync(file, `${slot("New title")}${rest}${jsonl({ type: "message", id: "m2" })}`);
+  await uploadFile("omp", file, options());
+  expect(sentRaw()).toEqual([{ type: "message", id: "m2" }]);
+
+  // A different session header still means a rewritten file, even one that grew.
+  received = [];
+  const other = jsonl(
+    { type: "session", id: "other", cwd: "/repo" },
+    { type: "message", id: "m1" },
+  );
+  writeFileSync(file, `${slot("")}${other}${jsonl({ type: "message", id: "m2" })}`);
+  expect(statSync(file).size).toBeGreaterThan(Buffer.byteLength(`${slot("")}${rest}`) + 30);
+  await uploadFile("omp", file, options());
+  expect(sentRaw()).toHaveLength(4);
 });
 
 test("skips oversize, blank, and invalid lines but moves the cursor past them", async () => {
