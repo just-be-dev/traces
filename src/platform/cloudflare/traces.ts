@@ -209,8 +209,8 @@ export const storage = (raw: Effect.Effect<D1Statements>) =>
     }),
   });
 
-// Single tenant: Access admits only the configured owner email or service token, and
-// service-token requests carry no user email, so every admitted request maps to one owner.
+// Single tenant: Access admits only members of the Cloudflare account or the service token, and
+// every admitted request maps to one owner: the account's traces.
 export const singleOwner = Owner.make("owner");
 
 /** `access` is the request's Access context, present only once a policy admitted it. */

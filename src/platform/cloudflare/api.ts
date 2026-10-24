@@ -43,13 +43,21 @@ const oauthRedirectUris = [
     .filter((uri) => uri !== ""),
 ];
 
+/**
+ * Members of the Cloudflare account the stack deploys to, signed in with the Cloudflare login (the
+ * only sign-in that proves membership), plus an optional service token for other noninteractive
+ * clients. A plan-time lookup: it resolves during deploy, never in the running Worker.
+ */
+const cloudflareLogin = Cloudflare.Access.getIdentityProvider({ type: "cloudflare" });
+
 const Access = Cloudflare.Access.Application("TracesAccess", {
   type: "self_hosted",
+  allowedIdps: [cloudflareLogin.identityProviderId.as<string>()],
   policies: [
     {
       decision: "allow",
       include: [
-        { email: process.env.TRACES_ACCESS_EMAIL ?? "nobody@example.invalid" },
+        { cloudflareAccountMember: cloudflareLogin.accountId.as<string>() },
         ...(process.env.TRACES_ACCESS_SERVICE_TOKEN_ID
           ? [{ serviceToken: process.env.TRACES_ACCESS_SERVICE_TOKEN_ID }]
           : []),
