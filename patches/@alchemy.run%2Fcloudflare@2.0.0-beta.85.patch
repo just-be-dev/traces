@@ -1,7 +1,7 @@
-diff --git a/lib/Cloudflare/AI/SearchInstance.d.ts b/lib/Cloudflare/AI/SearchInstance.d.ts
-index b1bc75578fb3ebb131c778676805d4abedf35815..b5ba5bcccb447c735fa5de37aeed7d838330407a 100644
---- a/lib/Cloudflare/AI/SearchInstance.d.ts
-+++ b/lib/Cloudflare/AI/SearchInstance.d.ts
+diff --git a/lib/AI/SearchInstance.d.ts b/lib/AI/SearchInstance.d.ts
+index 45e7b22426d006082d4ce6e835760ed50dec27f6..c8ac9f28f1c97711423e9c5d710eb35b64664a93 100644
+--- a/lib/AI/SearchInstance.d.ts
++++ b/lib/AI/SearchInstance.d.ts
 @@ -8,7 +8,8 @@ type TypeId = typeof TypeId;
  /**
   * The kind of data source an AI Search instance indexes.
@@ -22,13 +22,13 @@ index b1bc75578fb3ebb131c778676805d4abedf35815..b5ba5bcccb447c735fa5de37aeed7d83
      /**
       * Source-specific indexing parameters (R2 prefix / include / exclude
       * filters, web-crawler crawl and parse options).
-diff --git a/lib/Cloudflare/AI/SearchInstance.js b/lib/Cloudflare/AI/SearchInstance.js
-index 7675a30aade7ab5e2a8f95eca6a12be66ca05bb4..240dc4b037a12045da1657371d08924620e8a2ae 100644
---- a/lib/Cloudflare/AI/SearchInstance.js
-+++ b/lib/Cloudflare/AI/SearchInstance.js
+diff --git a/lib/AI/SearchInstance.js b/lib/AI/SearchInstance.js
+index a2de4fd2ec442dc449d6e86974a893bb8cf906c1..15a3947a1877bafac5dcab9ddb9cd250f3d53a2f 100644
+--- a/lib/AI/SearchInstance.js
++++ b/lib/AI/SearchInstance.js
 @@ -335,8 +335,9 @@ export const SearchInstanceProvider = () => Provider.succeed(SearchInstance, {
                  accountId: acct,
-                 name: namespace,
+                 namespace,
                  id: instanceId,
 -                type: news.type ?? "r2",
 -                ...toMutableBody(news),
@@ -36,22 +36,22 @@ index 7675a30aade7ab5e2a8f95eca6a12be66ca05bb4..240dc4b037a12045da1657371d089246
 +                type: news.type === "builtin" ? undefined : (news.type ?? "r2"),
 +                ...defined(toMutableBody(news)),
              })
-                 .pipe(retryTokenPropagation, Effect.map((created) => ({
-                 created: true,
-@@ -534,7 +535,8 @@ const toAttributes = (instance, accountId, namespace) => ({
+                 .pipe(
+             // An out-of-band delete reads as missing while Cloudflare is
+@@ -542,7 +543,8 @@ const toAttributes = (instance, accountId, namespace) => ({
      accountId,
      namespace,
      // Distilled widens generated string enums to open unions.
 -    type: (normalize(instance.type) ?? "r2"),
 +    // PATCH: Cloudflare reports no type or source for built-in storage.
-+  type: (normalize(instance.type) ?? (normalize(instance.source) === undefined ? "builtin" : "r2")),
++    type: (normalize(instance.type) ?? (normalize(instance.source) === undefined ? "builtin" : "r2")),
      source: normalize(instance.source),
      tokenId: normalize(instance.tokenId),
      aiGatewayId: normalize(instance.aiGatewayId),
-diff --git a/src/Cloudflare/AI/SearchInstance.ts b/src/Cloudflare/AI/SearchInstance.ts
-index 1464df40339cdbe49dfb0acfc8cbe880be03c88f..1ec51e07b76d19a8473cff8dc8cf93557c94600a 100644
---- a/src/Cloudflare/AI/SearchInstance.ts
-+++ b/src/Cloudflare/AI/SearchInstance.ts
+diff --git a/src/AI/SearchInstance.ts b/src/AI/SearchInstance.ts
+index 0eb4c69fba7f2316dec4e2dfd9ab8c645028723e..6c9ca0fffcbe6b2a02aa43900b7bb7cdd3601f0f 100644
+--- a/src/AI/SearchInstance.ts
++++ b/src/AI/SearchInstance.ts
 @@ -15,7 +15,8 @@ type TypeId = typeof TypeId;
  /**
   * The kind of data source an AI Search instance indexes.
@@ -74,7 +74,7 @@ index 1464df40339cdbe49dfb0acfc8cbe880be03c88f..1ec51e07b76d19a8473cff8dc8cf9355
     * filters, web-crawler crawl and parse options).
 @@ -649,8 +651,9 @@ export const SearchInstanceProvider = () =>
              accountId: acct,
-             name: namespace,
+             namespace,
              id: instanceId,
 -            type: news.type ?? "r2",
 -            ...toMutableBody(news),
@@ -83,14 +83,15 @@ index 1464df40339cdbe49dfb0acfc8cbe880be03c88f..1ec51e07b76d19a8473cff8dc8cf9355
 +            ...defined(toMutableBody(news)),
            })
            .pipe(
-             retryTokenPropagation,
-@@ -916,7 +919,8 @@ const toAttributes = (
+             // An out-of-band delete reads as missing while Cloudflare is
+@@ -922,7 +925,9 @@ const toAttributes = (
    accountId,
    namespace,
    // Distilled widens generated string enums to open unions.
 -  type: (normalize(instance.type) ?? "r2") as SearchInstanceSourceType,
 +  // PATCH: Cloudflare reports no type or source for built-in storage.
-+  type: (normalize(instance.type) ?? (normalize(instance.source) === undefined ? "builtin" : "r2")) as SearchInstanceSourceType,
++  type: (normalize(instance.type) ??
++    (normalize(instance.source) === undefined ? "builtin" : "r2")) as SearchInstanceSourceType,
    source: normalize(instance.source),
    tokenId: normalize(instance.tokenId),
    aiGatewayId: normalize(instance.aiGatewayId),

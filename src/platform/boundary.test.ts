@@ -13,7 +13,7 @@ test("backend domains don't depend on platform adapters, SDKs, or Cloudflare glo
       if (specifier === undefined) continue;
       const target = resolve(src, dirname(path), specifier);
       if (
-        /^(alchemy|cloudflare:|@cloudflare\/|agents(?:\/|$))/.test(specifier) ||
+        /^(alchemy|@alchemy\.run\/|cloudflare:|@cloudflare\/|agents(?:\/|$))/.test(specifier) ||
         target.startsWith(`${src}/platform/`)
       ) {
         violations.push(`${path}: ${specifier}`);

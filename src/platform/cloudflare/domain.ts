@@ -1,4 +1,4 @@
-import type * as Cloudflare from "alchemy/Cloudflare";
+import type * as Cloudflare from "@alchemy.run/cloudflare";
 
 /**
  * Public hostname, e.g. `traces.just-be.dev`, read at plan time like the Access
